@@ -88,7 +88,7 @@ Short explanation for parents/teachers (1–3 sentences)""",
 crew = Crew(
     agents=[assessor],
     tasks=[task],
-    verbose=2   # detailed logs — change to 1 when it's working smoothly
+    verbose=True   # detailed logs — change to 1 when it's working smoothly
 )
 
 # ────────────────────────────────────────────────
