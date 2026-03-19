@@ -1,4 +1,4 @@
-from crewai import Agent, Task, Crew
+from crewai import Agent, Task, Crew, LLM
 #from langchain_ollama import ChatOllama
 import os
 # This line is a "safety net" to stop CrewAI from ever asking for a key
