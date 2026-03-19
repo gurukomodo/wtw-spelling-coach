@@ -53,7 +53,6 @@ Finally, suggest the next 1–2 targeted spelling features with examples.""",
     verbose=True
     allow_delegation=False  # Keeps the agent focused on its own task
 )
-)
 
 # ────────────────────────────────────────────────
 #  TASK: Score one student's spellings
