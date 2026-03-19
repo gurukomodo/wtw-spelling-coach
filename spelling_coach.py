@@ -50,7 +50,7 @@ You carefully score:
 Then assign the correct stage (most grade 2 students are in Letter Name-Alphabetic or Within Word Pattern).
 Finally, suggest the next 1–2 targeted spelling features with examples.""",
     llm=llm,
-    verbose=True
+    verbose=True,
     allow_delegation=False  # Keeps the agent focused on its own task
 )
 
