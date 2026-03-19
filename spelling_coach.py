@@ -14,7 +14,7 @@ TAILSCALE_NAS_IP = "100.64.55.61:11434"   # ← EDITed
 LOCAL_NAS_IP = "192.168.12.104"
 
 # Choose which one to use (uncomment the line you want)
-base_url="http://100.64.55.61:11434",   # ← your NAS Tailscale IP
+base_url="http://100.64.55.61:11434"  # ← your NAS Tailscale IP
 # base_url = f"http://{LOCAL_NAS_IP}:11434"        # ← use this for home testing only
 
 # ────────────────────────────────────────────────
