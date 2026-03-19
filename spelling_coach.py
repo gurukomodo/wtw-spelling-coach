@@ -8,13 +8,13 @@ from langchain_ollama import ChatOllama
 # OPTION A: Use Tailscale IP (recommended once Tailscale is working)
 # Replace 100.64.xxx.xxx with your NAS's actual Tailscale IP
 # (found in Tailscale menu bar on your Mac → device list → NAS entry)
-TAILSCALE_NAS_IP = "100.64.xxx.xxx"   # ← EDIT THIS LINE
+TAILSCALE_NAS_IP = "100.64.55.61:11434"   # ← EDITed
 
 # OPTION B: Use local IP (only works when on home network)
 LOCAL_NAS_IP = "192.168.12.104"
 
 # Choose which one to use (uncomment the line you want)
-base_url = f"http://{TAILSCALE_NAS_IP}:11434"      # ← preferred once Tailscale is set
+base_url="http://100.64.55.61:11434",   # ← your NAS Tailscale IP
 # base_url = f"http://{LOCAL_NAS_IP}:11434"        # ← use this for home testing only
 
 # ────────────────────────────────────────────────
