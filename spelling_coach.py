@@ -1,5 +1,8 @@
 from crewai import Agent, Task, Crew
-from langchain_ollama import ChatOllama
+#from langchain_ollama import ChatOllama
+import os
+# This line is a "safety net" to stop CrewAI from ever asking for a key
+os.environ["OPENAI_API_KEY"] = "NA"
 
 # ────────────────────────────────────────────────
 #  SECTION 1: CHOOSE YOUR OLLAMA CONNECTION
@@ -21,11 +24,15 @@ base_url="http://100.64.55.61:11434"  # ← your NAS Tailscale IP
 #  SECTION 2: MODEL SETTINGS
 # ────────────────────────────────────────────────
 
+#llm = ChatOllama(
+#    model="qwen2.5:7b",          # ← change to "llama3.2:3b" if you want to test with the smaller model
+#    base_url=base_url,           # ← uses the URL you chose above
+#    temperature=0.2,             # low = more consistent & accurate scoring
+#    verbose=True                 # shows thinking steps (good for debugging)
 llm = ChatOllama(
-    model="qwen2.5:7b",          # ← change to "llama3.2:3b" if you want to test with the smaller model
-    base_url=base_url,           # ← uses the URL you chose above
-    temperature=0.2,             # low = more consistent & accurate scoring
-    verbose=True                 # shows thinking steps (good for debugging)
+    model="ollama/qwen2.5:7b",
+    base_url=base_url,
+    temperature=0.2,
 )
 
 # ────────────────────────────────────────────────
@@ -44,6 +51,8 @@ Then assign the correct stage (most grade 2 students are in Letter Name-Alphabet
 Finally, suggest the next 1–2 targeted spelling features with examples.""",
     llm=llm,
     verbose=True
+    allow_delegation=False  # Keeps the agent focused on its own task
+)
 )
 
 # ────────────────────────────────────────────────
