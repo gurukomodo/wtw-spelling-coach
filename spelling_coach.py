@@ -29,7 +29,7 @@ base_url="http://100.64.55.61:11434"  # ← your NAS Tailscale IP
 #    base_url=base_url,           # ← uses the URL you chose above
 #    temperature=0.2,             # low = more consistent & accurate scoring
 #    verbose=True                 # shows thinking steps (good for debugging)
-llm = ChatOllama(
+llm = LLM(
     model="ollama/qwen2.5:7b",
     base_url=base_url,
     temperature=0.2,
