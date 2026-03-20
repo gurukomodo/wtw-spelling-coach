@@ -1,40 +1,34 @@
-from crewai import Agent, Task, Crew, LLM
-#from langchain_ollama import ChatOllama
 import os
-# This line is a "safety net" to stop CrewAI from ever asking for a key
-os.environ["OPENAI_API_KEY"] = "NA"
+from dotenv import load_dotenv
+import litellm
+from crewai import Agent, Task, Crew
+from pydantic import BaseModel
+from typing import List, Optional
 
-# ────────────────────────────────────────────────
-#  SECTION 1: CHOOSE YOUR OLLAMA CONNECTION
-# ────────────────────────────────────────────────
+# 1. LOAD SECRETS & SETTINGS
+load_dotenv() # Looks for your .env file
+os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
+os.environ["OPENAI_API_KEY"] = "NA" # Keeps CrewAI from looking for OpenAI
 
-# OPTION A: Use Tailscale IP (recommended once Tailscale is working)
-# Replace 100.64.xxx.xxx with your NAS's actual Tailscale IP
-# (found in Tailscale menu bar on your Mac → device list → NAS entry)
-TAILSCALE_NAS_IP = "100.64.55.61:11434"   # ← EDITed
+# 2. LITELLM CONFIG (The "Patience" and "Silence" settings)
+litellm.request_timeout = 300
+litellm.suppress_debug_info = True
 
-# OPTION B: Use local IP (only works when on home network)
-LOCAL_NAS_IP = "192.168.12.104"
+# 3. CHOOSE YOUR BRAIN
+# We are using Groq's biggest model for high-accuracy spelling analysis
+llm = "groq/llama-3.3-70b-versatile"
 
-# Choose which one to use (uncomment the line you want)
-base_url="http://100.64.55.61:11434"  # ← your NAS Tailscale IP
-# base_url = f"http://{LOCAL_NAS_IP}:11434"        # ← use this for home testing only
-
-# ────────────────────────────────────────────────
-#  SECTION 2: MODEL SETTINGS
-# ────────────────────────────────────────────────
-
-#llm = ChatOllama(
-#    model="qwen2.5:7b",          # ← change to "llama3.2:3b" if you want to test with the smaller model
-#    base_url=base_url,           # ← uses the URL you chose above
-#    temperature=0.2,             # low = more consistent & accurate scoring
-#    verbose=True                 # shows thinking steps (good for debugging)
-llm = LLM(
-    model="ollama/qwen2.5:7b",
-    base_url=base_url,
-    temperature=0.2,
-)
-
+class WTWScoreSchema(BaseModel):
+    student_name: str
+    words_correct: int
+    words_incorrect_list: List[str]
+    feature_points: int
+    total_score: int
+    spelling_stage: str
+    mastered_patterns: List[str]
+    struggle_patterns: List[str]
+    next_focus: str
+    short_explanation: str
 # ────────────────────────────────────────────────
 #  AGENT: WTW Primary Spelling Inventory Assessor
 # ────────────────────────────────────────────────
@@ -42,16 +36,16 @@ llm = LLM(
 assessor = Agent(
     role="WTW Primary Spelling Inventory Assessor",
     goal="Accurately score a grade 2 student's Primary Spelling Inventory using official Words Their Way rules.",
-    backstory="""You are an experienced Taiwanese grade 2 English teacher who knows the official WTW Primary Spelling Inventory feature guide inside out.
-You carefully score:
-- Words correct (/26)
-- Feature points (/56) — consonants, short vowels, digraphs/blends, long vowels, r-controlled, diphthongs, etc.
-- Total score (/82)
-Then assign the correct stage (most grade 2 students are in Letter Name-Alphabetic or Within Word Pattern).
-Finally, suggest the next 1–2 targeted spelling features with examples.""",
+    backstory="""You are an experienced grade 2 English teacher who knows the official WTW Primary Spelling Inventory feature guide inside out.
+    You carefully score:
+    - Words correct (/26)
+    - Feature points (/56) — consonants, short vowels, digraphs/blends, long vowels, r-controlled, diphthongs, etc.
+    - Total score (/82)
+    Then assign the correct stage (most grade 2 students are in Letter Name-Alphabetic or Within Word Pattern).
+    Finally, suggest the next 1–2 targeted spelling features with examples.""",
     llm=llm,
     verbose=True,
-    allow_delegation=False  # Keeps the agent focused on its own task
+    allow_delegation=False
 )
 
 # ────────────────────────────────────────────────
@@ -59,43 +53,43 @@ Finally, suggest the next 1–2 targeted spelling features with examples.""",
 # ────────────────────────────────────────────────
 
 task = Task(
-    description="""Score this student's Primary Spelling Inventory responses.
+    description="""
+    Analyze the following student spelling attempts:
+    {student_spellings}
 
-Official 26 words (in order):
-1. fan  2. pet  3. dig  4. rob  5. hope  6. wait  7. gum  8. sled  9. stick
-10. shine  11. dream  12. blade  13. coach  14. fright  15. chewed  16. crawl
-17. wishes  18. thorn  19. shouted  20. spoil  21. growl  22. third  23. camped
-24. tries  25. clapping  26. riding
-
-Student's spellings (word: their attempt):
-{student_spellings}
-
-Output in this exact format:
-Words correct: X/26 (briefly list which ones were wrong)
-Feature points: Y/56 (highlight the main missed features)
-Total score: Z/82
-Spelling stage: [exact stage name, e.g. Within Word Pattern - Early]
-Next focus features: [1–2 specific patterns with examples, e.g. long vowels ai/ay/a-e, r-controlled ar/or]
-Short explanation for parents/teachers (1–3 sentences)""",
+    Follow this EXACT scoring method to ensure mathematical accuracy:
+    
+    1. WORD SCORE: Check each word. If it is 100% correct, 1 point. (Total out of 26).
+    2. FEATURE SCORE: Check the specific phonetic features (For short vowels, give a point for each of these features, the correct initial and final consonants and the correct vowel. For words with other vowels give points for each digraph, blend, long vowel patterns, inflected endings, -r controlled vowels). 
+       - Award 1 point for every correct feature identified in the student's attempt.
+    
+    COMPUTATION:
+    - Step A: Count the number of words spelled correctly.
+    - Step B: Count the total number of phonetic feature points earned.
+    - Step C: Count the total number of possible phonetic features in the inventory (56).
+    - Step C: total_score = (Step A + Step B).
+    
+    Finalize the assessment by identifying the student's spelling stage and next instructional focus.
+    """,
     agent=assessor,
-    expected_output="Structured WTW scoring report"
+    expected_output="A structured JSON object with precise numerical totals and phonetic analysis.",
+    output_json=WTWScoreSchema
 )
 
 # ────────────────────────────────────────────────
-#  CREATE & RUN THE CREW (just one agent for now)
+#  CREATE & RUN THE CREW
 # ────────────────────────────────────────────────
 
 crew = Crew(
     agents=[assessor],
     tasks=[task],
-    verbose=True   # detailed logs — change to 1 when it's working smoothly
+    verbose=True 
 )
 
-# ────────────────────────────────────────────────
-#  EXAMPLE STUDENT DATA — EDIT THIS WHEN YOU WANT TO TEST A REAL STUDENT
-# ────────────────────────────────────────────────
-
 example_student = """
+NAME: Sam Smith
+YEAR: 2
+SPELLINGS:
 fan: fan
 pet: pet
 dig: dig
@@ -124,14 +118,65 @@ clapping: claping
 riding: ryding
 """
 
-# ────────────────────────────────────────────────
-#  RUN THE SCRIPT
-# ────────────────────────────────────────────────
+import csv
+from datetime import datetime
+
+def append_to_ledger(data_object):
+    file_name = 'students.csv'
+    file_exists = os.path.isfile(file_name)
+    
+    # Define the columns for our Spreadsheet
+    headers = [
+        'Date', 'Student Name', 'Stage', 'Score', 
+        'Correct Words', 'Total Feature Points', 'Mastered', 'Struggles', 'Next Steps'
+    ]
+    
+    with open(file_name, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(headers) # Write the header only once
+            
+        writer.writerow([
+            datetime.now().strftime("%Y-%m-%d"),
+            data_object.student_name,
+            data_object.spelling_stage,
+            f"{data_object.total_score}/82",
+            data_object.words_correct,
+            data_object.feature_points,
+            ", ".join(data_object.mastered_patterns),
+            ", ".join(data_object.struggle_patterns),
+            data_object.next_focus
+        ])
+    print(f"\n📁 Data for '{data_object.student_name}' has been saved to students.csv")
+    
+
+import json
 
 if __name__ == "__main__":
-    print("Running WTW Spelling Inventory Assessor...")
+    print("Running Structured Assessment...")
     result = crew.kickoff(inputs={"student_spellings": example_student})
-    print("\n" + "="*50)
-    print("FINAL WTW ASSESSMENT RESULT")
-    print("="*50 + "\n")
-    print(result)
+    
+    # 1. Try to get the data from pydantic first
+    data = result.pydantic
+    
+    # 2. If that's empty, try to manually pull it from the raw text
+    if not data:
+        try:
+            # This looks for the JSON inside the AI's response
+            raw_text = result.raw
+            # Remove any triple backticks if the AI added them
+            clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+            data_dict = json.loads(clean_json)
+            
+            # Use a simple 'Namespace' so our ledger function still works
+            from types import SimpleNamespace
+            data = SimpleNamespace(**data_dict)
+        except Exception as e:
+            print(f"Manual parsing failed: {e}")
+
+    if data:
+        print(f"\nAnalysis Complete for {data.student_name}!")
+        print(f"Stage: {data.spelling_stage} | Score: {data.total_score}/82")
+        append_to_ledger(data)
+    else:
+        print("\n❌ Error: Could not extract data from AI response.")

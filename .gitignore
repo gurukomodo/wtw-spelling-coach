@@ -19,4 +19,8 @@ __pycache__/\
 .DS_Store\
 \
 # Local environment variables (if you ever use .env files)\
-.env}
+.env\
+.venv/
+.env
+__pycache__/
+.venv/
