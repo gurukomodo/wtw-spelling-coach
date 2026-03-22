@@ -4,10 +4,15 @@ import litellm
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel
 from typing import List, Optional
+import streamlit as st
 
 # 1. LOAD SECRETS & SETTINGS
 load_dotenv() # Looks for your .env file
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    st.error("🔑 API Key not found! Please check your .env file.")
+    st.stop()
+os.environ["GROQ_API_KEY"] = api_key
 os.environ["OPENAI_API_KEY"] = "NA" # Keeps CrewAI from looking for OpenAI
 
 # 2. LITELLM CONFIG (The "Patience" and "Silence" settings)
