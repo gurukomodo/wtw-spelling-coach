@@ -4,6 +4,10 @@ import os
 # Import your existing logic here (assuming your main script is spelling_coach.py)
 from spelling_coach import crew, WTWScoreSchema, append_to_ledger 
 
+# Initialize session state if it doesn't exist yet
+if "transcribed_text" not in st.session_state:
+    st.session_state["transcribed_text"] = ""
+
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="WTW Spelling Coach", page_icon="🍎")
 
@@ -32,11 +36,40 @@ with col1:
 with col2:
     test_date = st.date_input("Test Date")
 
+# Use session_state to pre-fill the box if we just did an OCR scan
+default_text = st.session_state.get("transcribed_text", "")
+
 student_attempts = st.text_area(
-    "Paste student spellings (e.g., fan: fan, hope: hop):", 
+    "Student spellings (Verify transcription here):", 
+    value=default_text,
     height=300
 )
+st.header("📸 Upload Student Assessment")
+uploaded_file = st.file_uploader("Choose a photo of the spelling test...", type=["jpg", "jpeg", "png"])
 
+if uploaded_file is not None:
+    # Display the image so you can see what you uploaded
+    st.image(uploaded_file, caption='Uploaded Assessment', use_container_width=True)
+    
+    if st.button("🔍 Read Handwriting"):
+        st.write("Button Clicked!") # This should appear on your screen
+        with st.spinner("The AI is squinting..."):
+            from spelling_coach import encode_image, transcribe_handwriting
+            base64_str = encode_image(uploaded_file)
+            transcription = transcribe_handwriting(base64_str)
+            st.session_state["transcribed_text"] = transcription
+            st.rerun()with st.spinner("The AI is squinting at the handwriting..."):
+                # 1. Convert the file to base64
+                from spelling_coach import encode_image, transcribe_handwriting
+                base64_str = encode_image(uploaded_file)
+        
+                # 2. Get the transcription
+                transcription = transcribe_handwriting(base64_str)
+        
+                # 3. Store it in Session State so the text area below picks it up
+                st.session_state["transcribed_text"] = transcription
+                st.success("Transcription complete! Review the text below.")
+                
 if st.button("🚀 Run Analysis"):
     if not student_name or not student_attempts:
         st.error("Please provide both a name and spelling attempts!")

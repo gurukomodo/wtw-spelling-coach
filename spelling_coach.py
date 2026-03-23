@@ -81,6 +81,29 @@ task = Task(
     output_json=WTWScoreSchema
 )
 
+from litellm import completion
+
+def transcribe_handwriting(base64_image):
+    print("🚀 FUNCTION CALLED: Sending image to Groq...") # Add this here
+    try:
+        response = completion(
+            model="groq/meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[...]
+        )
+        print("✅ SUCCESS: AI responded.") # Add this here
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"❌ ERROR: {e}") # This will catch the "Secret" error
+        return f"Error: {e}"
+    
+import base64
+
+def encode_image(image_file):
+    """Converts the uploaded image into a format the AI can understand."""
+    return base64.b64encode(image_file.read()).decode('utf-8')
+
+# This is the specialized 'Vision' prompt for the AI
+VISION_PROMPT = "Transcribe the handwritten words in this image. List only the words, separated by commas. No conversational filler."
 # ────────────────────────────────────────────────
 #  CREATE & RUN THE CREW
 # ────────────────────────────────────────────────

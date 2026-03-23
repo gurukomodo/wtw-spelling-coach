@@ -24,3 +24,4 @@ __pycache__/\
 .env
 __pycache__/
 .venv/
+.DS_Store
