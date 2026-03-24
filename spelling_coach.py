@@ -4,10 +4,23 @@ import litellm
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel
 from typing import List, Optional
+import streamlit as st
+from pathlib import Path
+
+#debugging fault
+print(f"DEBUG: Current Folder: {Path.cwd()}")
+print(f"DEBUG: Looking for .env at: {Path(__file__).parent / '.env'}")
+print(f"DEBUG: Does that file exist? {(Path(__file__).parent / '.env').exists()}")
+
 
 # 1. LOAD SECRETS & SETTINGS
-load_dotenv() # Looks for your .env file
+# This finds the folder where spelling_coach.py actually lives
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 api_key = os.getenv("GROQ_API_KEY")
+
+
 if not api_key:
     st.error("🔑 API Key not found! Please check your .env file.")
     st.stop()
