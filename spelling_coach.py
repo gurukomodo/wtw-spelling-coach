@@ -4,7 +4,6 @@ import litellm
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel
 from typing import List, Optional
-import streamlit as st
 
 # 1. LOAD SECRETS & SETTINGS
 load_dotenv() # Looks for your .env file
@@ -18,6 +17,7 @@ os.environ["OPENAI_API_KEY"] = "NA" # Keeps CrewAI from looking for OpenAI
 # 2. LITELLM CONFIG (The "Patience" and "Silence" settings)
 litellm.request_timeout = 300
 litellm.suppress_debug_info = True
+litellm.set_verbose = False 
 
 # 3. CHOOSE YOUR BRAIN
 # We are using Groq's biggest model for high-accuracy spelling analysis
@@ -84,17 +84,57 @@ task = Task(
 from litellm import completion
 
 def transcribe_handwriting(base64_image):
-    print("🚀 FUNCTION CALLED: Sending image to Groq...") # Add this here
+    '''
+    This is from POE
+    '''
+    """
+    Sends a photo of student handwriting to Groq's vision model.
+    Returns the AI's best guess at what words were written.
+    """
+    print("🚀 Sending image to AI for transcription...")
+    
     try:
         response = completion(
-            model="groq/meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[...]
+            model="groq/meta-llama/llama-4-scout-17b-16e-instruct",  # Groq's vision model
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """You are helping a grade 2 teacher transcribe student spelling attempts.
+                            
+                            Look at this handwritten spelling test and transcribe ONLY the words the student wrote.
+                            
+                            Format your response EXACTLY like this:
+                            fan: fan
+                            pet: pet
+                            dig: dig
+                            
+                            (That means: test_word: student_attempt)
+                            
+                            If you can't read a word, write: word: [unclear]
+                            Do not add any other commentary."""
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        print("✅ SUCCESS: AI responded.") # Add this here
-        return response.choices[0].message.content
+        
+        transcribed_text = response.choices[0].message.content
+        print("✅ Transcription successful!")
+        return transcribed_text
+        
     except Exception as e:
-        print(f"❌ ERROR: {e}") # This will catch the "Secret" error
-        return f"Error: {e}"
+        error_msg = f"Error reading handwriting: {str(e)}"
+        print(f"❌ {error_msg}")
+        return error_msg
     
 import base64
 
@@ -103,7 +143,22 @@ def encode_image(image_file):
     return base64.b64encode(image_file.read()).decode('utf-8')
 
 # This is the specialized 'Vision' prompt for the AI
-VISION_PROMPT = "Transcribe the handwritten words in this image. List only the words, separated by commas. No conversational filler."
+VISION_PROMPT = """
+You are an expert at reading primary school student handwriting. 
+Analyze the spelling test image provided.
+For each word:
+1. Number the test words in order (1. fan, 2. pet, etc.)
+1. Identify the target word (the word the teacher said).
+2. Identify exactly what the student wrote.
+
+Format the output as a clean list like this:
+1. fan: fan
+2. pet: pet
+3. dig: dig
+
+If a student wrote something that isn't a word, transcribe the letters exactly as they appear. 
+Do not repeat words and do not add conversational filler.
+"""
 # ────────────────────────────────────────────────
 #  CREATE & RUN THE CREW
 # ────────────────────────────────────────────────

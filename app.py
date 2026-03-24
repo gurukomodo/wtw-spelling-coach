@@ -39,52 +39,58 @@ with col2:
 # Use session_state to pre-fill the box if we just did an OCR scan
 default_text = st.session_state.get("transcribed_text", "")
 
+st.header("📸 Upload Student Assessment")
+uploaded_file = st.file_uploader("Choose a photo of the spelling test...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Display the image
+    st.image(uploaded_file, caption='Uploaded Assessment', width='stretch')
+    
+    if st.button("🔍 Read Handwriting"):
+        with st.spinner("The AI is reading the handwriting..."):
+            from spelling_coach import encode_image, transcribe_handwriting
+            
+            # Convert image to format AI understands
+            base64_str = encode_image(uploaded_file)
+            
+            # Get AI's interpretation
+            transcription = transcribe_handwriting(base64_str)
+            
+            # Save it so the text box below can show it
+            st.session_state["transcribed_text"] = transcription
+            
+            # Show what the AI saw! (This was missing!)
+            st.success("✅ AI finished reading!")
+            st.subheader("What the AI thinks it says:")
+            st.code(transcription)  # Display it clearly
+            
+            st.info("👆 Check if the AI read it correctly, then click 'Run Analysis' below")
+
 student_attempts = st.text_area(
     "Student spellings (Verify transcription here):", 
     value=default_text,
     height=300
 )
-st.header("📸 Upload Student Assessment")
-uploaded_file = st.file_uploader("Choose a photo of the spelling test...", type=["jpg", "jpeg", "png"])
 
-if uploaded_file is not None:
-    # Display the image so you can see what you uploaded
-    st.image(uploaded_file, caption='Uploaded Assessment', use_container_width=True)
-    
-    if st.button("🔍 Read Handwriting"):
-        st.write("Button Clicked!") # This should appear on your screen
-        with st.spinner("The AI is squinting..."):
-            from spelling_coach import encode_image, transcribe_handwriting
-            base64_str = encode_image(uploaded_file)
-            transcription = transcribe_handwriting(base64_str)
-            st.session_state["transcribed_text"] = transcription
-            st.rerun()with st.spinner("The AI is squinting at the handwriting..."):
-                # 1. Convert the file to base64
-                from spelling_coach import encode_image, transcribe_handwriting
-                base64_str = encode_image(uploaded_file)
-        
-                # 2. Get the transcription
-                transcription = transcribe_handwriting(base64_str)
-        
-                # 3. Store it in Session State so the text area below picks it up
-                st.session_state["transcribed_text"] = transcription
-                st.success("Transcription complete! Review the text below.")
                 
 if st.button("🚀 Run Analysis"):
     if not student_name or not student_attempts:
         st.error("Please provide both a name and spelling attempts!")
     else:
+        # SHOW what we're analyzing
+        st.subheader("Analyzing these responses:")
+        st.code(student_attempts)  # ← ADD THIS LINE
+        
         with st.spinner(f"Analyzing {student_name}'s spelling..."):
-            # Prepare inputs for your Crew
             inputs = {"student_spellings": f"NAME: {student_name}\n{student_attempts}"}
             
-            # Run the Crew
             result = crew.kickoff(inputs=inputs)
-            data = result.pydantic # The JSON Brain
+            data = result.pydantic
             
             if data:
-                # 1. Display results immediately
                 st.success("Analysis Complete!")
+                
+                # Your existing metrics code stays the same...
                 
                 # Metrics at a glance
                 m1, m2, m3 = st.columns(3)
