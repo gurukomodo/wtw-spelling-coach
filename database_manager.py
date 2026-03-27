@@ -29,12 +29,13 @@ def init_db():
             g8_reduction REAL,
             suggested_next TEXT,
             teacher_notes TEXT
+            teacher_refined_notes TEXT  -- <--- NEW COLUMN
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_assessment(data, raw_text):
+def save_assessment(data, raw_text, teacher_refinement=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -43,11 +44,11 @@ def save_assessment(data, raw_text):
             student_name, test_date, raw_transcription,
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
             g4_vowel_teams, g5_r_controlled, g6_clusters, 
-            g7_multisyllabic, g8_reduction, suggested_next, teacher_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            g7_multisyllabic, g8_reduction, suggested_next, 
+            teacher_notes, teacher_refined_notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     '''
     
-    # We join the suggested groups list into a single string for storage
     suggested_str = ", ".join(data.suggested_next_groups) if data.suggested_next_groups else ""
     
     values = (
@@ -55,12 +56,13 @@ def save_assessment(data, raw_text):
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
         data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
-        suggested_str, data.teacher_notes
+        suggested_str, data.teacher_notes, teacher_refinement
     )
     
     cursor.execute(query, values)
     conn.commit()
     conn.close()
+
 def get_all_latest_results():
     """Fetches the most recent assessment for every student in the database."""
     conn = sqlite3.connect(DB_PATH)
@@ -74,6 +76,23 @@ def get_all_latest_results():
         )
         ORDER BY student_name ASC
     '''
+def get_latest_teacher_notes(student_name):
+    """Retrieves the most recent teacher-corrected notes for a student."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # We look for the newest entry where the teacher actually wrote something
+    query = '''
+        SELECT teacher_refined_notes FROM assessments 
+        WHERE student_name = ? AND teacher_refined_notes IS NOT NULL 
+        ORDER BY id DESC LIMIT 1
+    '''
+    cursor.execute(query, (student_name,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result[0] if result else None
+
     cursor.execute(query)
     results = cursor.fetchall()
     conn.close()

@@ -1,5 +1,4 @@
-from turtle import pd
-
+import pandas as pd
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew
@@ -78,36 +77,52 @@ if uploaded_file:
                     
     # --- 4. DISPLAY RESULTS ---
     if st.session_state.analysis_result:
-        res = st.session_state.analysis_result
-        try:
-            # Flexible data extraction
-            if hasattr(res, 'pydantic') and res.pydantic:
-                data = res.pydantic
-            elif hasattr(res, 'json_dict') and res.json_dict:
-                from argparse import Namespace
-                data = Namespace(**res.json_dict)
-            else:
-                import json
-                data = Namespace(**json.loads(res.raw))
+        data = st.session_state.analysis_result # (Use your existing extraction logic here)
 
-            # --- SAVE TO DB ---
+        st.subheader(f"📝 Diagnostic for {data.student_name}")
+        
+        # 1. Show the AI's suggested scores (Read-only for now)
+        cols = st.columns(3)
+        cols[0].metric("g0: Phonemic", f"{data.g0_phonemic_awareness}%")
+        # ... (Include your other metric columns here)
+
+        # 2. THE FEEDBACK LOOP: Editable Notes
+        st.write("### 👩‍🏫 Teacher Refinement")
+        st.caption("Edit the notes below to correct any AI hallucinations (e.g., removing unproven /θ/ mentions).")
+        
+        if st.session_state.analysis_result:
+        # 1. (Assuming 'data' and 'edited_text' are already defined above)
+        
+        st.subheader(f"📝 Diagnostic for {data.student_name}")
+        
+        # 2. THE FEEDBACK LOOP: The "Gold Standard" Editor
+        st.write("### 👩‍🏫 Teacher Refinement")
+        st.caption("Edit the AI's notes below to correct hallucinations before saving.")
+        
+        # We only need ONE text_area. 
+        # It starts with the AI's 'teacher_notes' as the default value.
+        final_notes = st.text_area(
+            "Final Diagnostic Notes (The 'Gold Standard')", 
+            value=data.teacher_notes, 
+            height=250
+        )
+
+        # 3. THE SAVE BUTTON
+        if st.button("💾 Confirm & Save to Student History"):
             from database_manager import save_assessment
-            save_assessment(data, edited_text)
+            
+            # We pass 'data' (the scores), 'edited_text' (the transcript), 
+            # and 'final_notes' (YOUR refined version).
+            save_assessment(data, edited_text, teacher_refinement=final_notes)
+            
+            st.success(f"✅ Final assessment for {data.student_name} has been saved to the database!")
+            st.balloons() # Optional: A little celebration for finishing a student!
 
-            st.success(f"✅ Diagnostic Complete for {data.student_name}!")
-            
-            # Show the 9-Group Profile
-            st.subheader("📊 Linguistic Profile")
-            # Using columns for a compact view of g0-g8
-            cols = st.columns(3)
-            cols[0].metric("g0: Phonemic", f"{data.g0_phonemic_awareness}%")
-            cols[1].metric("g1: CVC", f"{data.g1_cvc_mapping}%")
-            cols[2].metric("g2: Digraphs", f"{data.g2_digraphs}%")
-            
-            cols2 = st.columns(3)
-            cols2[0].metric("g3: Silent-E", f"{data.g3_silent_e}%")
-            cols2[1].metric("g4: Vowel Teams", f"{data.g4_vowel_teams}%")
-            cols2[2].metric("g5: R-Controlled", f"{data.g5_r_controlled}%")
+        if st.button("💾 Confirm & Save to Student History"):
+            from database_manager import save_assessment
+            # We pass the 'final_notes' separately so the DB saves your version
+            save_assessment(data, edited_text, teacher_refinement=final_notes)
+            st.success(f"Final assessment for {data.student_name} saved!")
 
             # Recommendations
             st.subheader("🎯 Instructional Targets")
@@ -120,17 +135,37 @@ if uploaded_file:
             st.error(f"Error: {e}")
             
 st.divider()
-st.header("📋 Class Overview (Step 2 Prep)")
+st.header("📊 Step 2: Class Analysis & Grouping")
 
-if st.button("🔄 Refresh Class Data"):
-    results = get_all_latest_results() # Fetching the latest test for each of your 7 students
-    if results:
-        df = pd.DataFrame(results, columns=[
+if st.button("🔄 Refresh Class Overview"):
+    data = get_all_latest_results()
+    
+    if data:
+        # Note: Ensure the columns list matches the order in your SQL SELECT *
+        # Based on our new schema: [ID, Name, Date, Transcription, g0...g8, Suggested, AI_Notes, Refined_Notes]
+        df = pd.DataFrame(data, columns=[
             "ID", "Name", "Date", "Transcription", 
             "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
-            "Targets", "Notes"
+            "Suggested", "AI_Notes", "Refined_Notes"
         ])
-        # Displaying a clean table of the 9-group scores
-        st.dataframe(df[["Name", "Date", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "Targets"]])
+        
+        # Create a 'Final Summary' column that prefers your edits
+        df['Final Summary'] = df['Refined_Notes'].fillna(df['AI_Notes'] + " (AI Unrefined)")
+        # If Refined_Notes is just an empty string, we also want to handle that:
+        df['Final Summary'] = df.apply(
+            lambda x: x['Refined_Notes'] if x['Refined_Notes'] and len(x['Refined_Notes']) > 5 
+            else f"⚠️ Review Needed: {x['AI_Notes']}", axis=1
+        )
+
+        # 1. Show the Scores Table
+        st.subheader("Current Linguistic Profiles")
+        st.dataframe(df[["Name", "Date", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"]])
+        
+        # 2. Show the "Teacher-Approved" Notes
+        st.subheader("Instructional Snapshots")
+        for index, row in df.iterrows():
+            with st.expander(f"👤 {row['Name']} - {row['Suggested']}"):
+                st.write(row['Final Summary'])
+            
     else:
-        st.info("No data in the database yet. Run an analysis to see results here.")
+        st.info("No student data found. Run an analysis to see the class overview.")

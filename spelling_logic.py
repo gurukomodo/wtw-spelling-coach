@@ -4,6 +4,7 @@ from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List
+from database_manager import get_latest_teacher_notes
 
 load_dotenv()
 
@@ -142,7 +143,7 @@ assessor = Agent(
     You assess each linguistic feature independently.
     """,
     
-    llm="llm="groq/llama3-70b-8192"",
+    llm="groq/llama-3.3-70b-versatile",
     allow_delegation=False
 )
 ''' This is the previous function, it is not robust enough.
@@ -164,6 +165,21 @@ def run_scoring_crew(student_name, transcription_text):
     return result
 '''
 def run_scoring_crew(student_name, transcription_text):
+    # 1. FETCH PREVIOUS FEEDBACK
+    past_feedback = get_latest_teacher_notes(student_name)
+    feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR THIS STUDENT: {past_feedback}" if past_feedback else ""
+
+    task_description = f"""
+    {feedback_context}
+    
+    Analyze {student_name}'s attempts: {transcription_text}
+    
+    STRICT RULES:
+    - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 
+      corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error.
+    - Base all notes on VISIBLE EVIDENCE in the current {transcription_text}.
+    """
+    
     task_description = f"""
     Analyze the following spelling attempts for {student_name}:
 
