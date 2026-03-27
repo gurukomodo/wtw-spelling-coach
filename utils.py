@@ -1,25 +1,27 @@
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 import io
 import base64
 
 def preprocess_image(uploaded_file):
-    """
-    Cleans the photo: fixes rotation, converts to grayscale, 
-    and boosts contrast so ink stands out from paper.
-    """
     img = Image.open(uploaded_file)
-    
-    # 1. Fix phone rotation (EXIF data)
     img = ImageOps.exif_transpose(img)
     
-    # 2. Convert to Grayscale
+    # 1. Grayscale
     img = img.convert("L")
     
-    # 3. Boost Contrast (2.5x makes faint pencil look like dark ink)
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.5) 
+    # 2. Sharpen the edges of the handwriting
+    img = img.filter(ImageFilter.SHARPEN)
     
-    # 4. Convert to Base64 for the AI
+    # 3. Aggressive Contrast (Makes the paper white and ink black)
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(3.0) 
+    
+    # 4. Brightness (Helps if the photo was taken in a dark classroom)
+    brightner = ImageEnhance.Brightness(img)
+    img = brightner.enhance(1.2)
+
     buffered = io.BytesIO()
     img.save(buffered, format="JPEG")
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+    img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
+    return img_str, img  # Return both the string for AI and the object for Streamlit
