@@ -5,90 +5,76 @@ import os
 DB_PATH = "data/spelling_coach.db"
 
 def init_db():
-    """Creates the database and tables if they don't exist."""
     if not os.path.exists("data"):
         os.makedirs("data")
         
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # 1. Students Table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            first_language TEXT DEFAULT 'Mandarin',
-            current_group TEXT
-        )
-    ''')
-    
-    # 2. Assessment Results Table
-    # We store the 8 specific levels you defined
+    # Updated Assessments Table for g0-g8
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS assessments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_id INTEGER,
+            student_name TEXT,
             test_date DATE,
             raw_transcription TEXT,
-            level_1_init_cons REAL,
-            level_2_final_cons REAL,
-            level_3_short_vowels REAL,
-            level_4_vowel_families REAL,
-            level_5_digraphs REAL,
-            level_6_blends REAL,
-            level_7_long_vowels REAL,
-            level_8_inflected_endings REAL,
-            FOREIGN KEY (student_id) REFERENCES students (id)
+            g0_phonemic REAL,
+            g1_cvc REAL,
+            g2_digraphs REAL,
+            g3_silent_e REAL,
+            g4_vowel_teams REAL,
+            g5_r_controlled REAL,
+            g6_clusters REAL,
+            g7_multisyllabic REAL,
+            g8_reduction REAL,
+            suggested_next TEXT,
+            teacher_notes TEXT
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_assessment(name, levels_dict, raw_text):
-    """Saves a student's test results."""
+def save_assessment(data, raw_text):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Ensure student exists or get their ID
-    cursor.execute("INSERT OR IGNORE INTO students (name) VALUES (?)", (name,))
-    cursor.execute("SELECT id FROM students WHERE name = ?", (name,))
-    student_id = cursor.fetchone()[0]
-    
-    # Insert assessment data
     query = '''
         INSERT INTO assessments (
-            student_id, test_date, raw_transcription,
-            level_1_init_cons, level_2_final_cons, level_3_short_vowels,
-            level_4_vowel_families, level_5_digraphs, level_6_blends,
-            level_7_long_vowels, level_8_inflected_endings
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            student_name, test_date, raw_transcription,
+            g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
+            g4_vowel_teams, g5_r_controlled, g6_clusters, 
+            g7_multisyllabic, g8_reduction, suggested_next, teacher_notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     '''
     
+    # We join the suggested groups list into a single string for storage
+    suggested_str = ", ".join(data.suggested_next_groups) if data.suggested_next_groups else ""
+    
     values = (
-        student_id, 
-        datetime.now().strftime("%Y-%m-%d"),
-        raw_text,
-        levels_dict.get('l1', 0), levels_dict.get('l2', 0),
-        levels_dict.get('l3', 0), levels_dict.get('l4', 0),
-        levels_dict.get('l5', 0), levels_dict.get('l6', 0),
-        levels_dict.get('l7', 0), levels_dict.get('l8', 0)
+        data.student_name, datetime.now().strftime("%Y-%m-%d %H:%M"), raw_text,
+        data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
+        data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
+        data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
+        suggested_str, data.teacher_notes
     )
     
     cursor.execute(query, values)
     conn.commit()
     conn.close()
-
-def get_student_history(name):
-    """Fetches all past tests for a specific student."""
+def get_all_latest_results():
+    """Fetches the most recent assessment for every student in the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # This SQL magic groups by name and picks the one with the highest (latest) ID
     query = '''
-        SELECT a.* FROM assessments a 
-        JOIN students s ON a.student_id = s.id 
-        WHERE s.name = ? 
-        ORDER BY a.test_date DESC
+        SELECT * FROM assessments 
+        WHERE id IN (
+            SELECT MAX(id) FROM assessments GROUP BY student_name
+        )
+        ORDER BY student_name ASC
     '''
-    cursor.execute(query, (name,))
+    cursor.execute(query)
     results = cursor.fetchall()
     conn.close()
     return results

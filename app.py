@@ -1,7 +1,9 @@
+from turtle import pd
+
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew
-from database_manager import init_db  # <--- 1. Import it
+from database_manager import init_db, get_all_latest_results# <--- 1. Import it
 
 # --- INITIALIZE DATABASE ---
 init_db()  # <--- 2. Run it (It creates the tables if they don't exist)
@@ -19,7 +21,17 @@ if "analysis_result" not in st.session_state:
 with st.sidebar:
     st.header("📋 Class Settings")
     # Using a key here ensures Streamlit remembers the name across clicks
-    student_name = st.text_input("Student Name", key="name_input")
+    student_name = st.text_input("Student Name (required)", key="name_input")
+
+    st.divider()
+    
+    # THE RESET BUTTON
+    if st.button("♻️ Start New Student"):
+        # Clear the memory
+        st.session_state.raw_transcription = ""
+        st.session_state.analysis_result = None
+        # This force-refreshes the page to a blank state
+        st.rerun()
 
 uploaded_file = st.file_uploader("📸 Step 1: Upload Test Photo", type=["jpg", "jpeg", "png"])
 
@@ -67,37 +79,58 @@ if uploaded_file:
     # --- 4. DISPLAY RESULTS ---
     if st.session_state.analysis_result:
         res = st.session_state.analysis_result
-        
         try:
-            # This logic checks every possible place the data could be hiding
+            # Flexible data extraction
             if hasattr(res, 'pydantic') and res.pydantic:
                 data = res.pydantic
             elif hasattr(res, 'json_dict') and res.json_dict:
-                # If it's a dictionary, we turn it into an object-like structure
                 from argparse import Namespace
                 data = Namespace(**res.json_dict)
             else:
-                # If all else fails, try parsing the raw string
                 import json
-                raw_data = json.loads(res.raw)
-                from argparse import Namespace
-                data = Namespace(**raw_data)
+                data = Namespace(**json.loads(res.raw))
 
-            st.success("✅ Analysis Complete!")
+            # --- SAVE TO DB ---
+            from database_manager import save_assessment
+            save_assessment(data, edited_text)
+
+            st.success(f"✅ Diagnostic Complete for {data.student_name}!")
             
-            # Now we use 'data' safely
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Stage", data.spelling_stage)
-            m2.metric("Total Score", f"{data.total_score}/82")
-            m3.metric("Words Correct", f"{data.words_correct}/26")
+            # Show the 9-Group Profile
+            st.subheader("📊 Linguistic Profile")
+            # Using columns for a compact view of g0-g8
+            cols = st.columns(3)
+            cols[0].metric("g0: Phonemic", f"{data.g0_phonemic_awareness}%")
+            cols[1].metric("g1: CVC", f"{data.g1_cvc_mapping}%")
+            cols[2].metric("g2: Digraphs", f"{data.g2_digraphs}%")
             
-            st.subheader("Instructional Focus")
-            st.info(f"**Focus:** {data.next_focus}")
+            cols2 = st.columns(3)
+            cols2[0].metric("g3: Silent-E", f"{data.g3_silent_e}%")
+            cols2[1].metric("g4: Vowel Teams", f"{data.g4_vowel_teams}%")
+            cols2[2].metric("g5: R-Controlled", f"{data.g5_r_controlled}%")
+
+            # Recommendations
+            st.subheader("🎯 Instructional Targets")
+            st.info(f"Priority Groups: {', '.join(data.suggested_next_groups)}")
             
-            with st.expander("📝 Teacher's Summary"):
-                st.write(data.short_explanation)
+            with st.expander("📝 Diagnostic Teacher Notes"):
+                st.write(data.teacher_notes)
 
         except Exception as e:
-            st.error(f"Display Error: {e}")
-            st.write("The AI sent data, but we couldn't format it. Here is the raw text:")
-            st.code(res.raw)
+            st.error(f"Error: {e}")
+            
+st.divider()
+st.header("📋 Class Overview (Step 2 Prep)")
+
+if st.button("🔄 Refresh Class Data"):
+    results = get_all_latest_results() # Fetching the latest test for each of your 7 students
+    if results:
+        df = pd.DataFrame(results, columns=[
+            "ID", "Name", "Date", "Transcription", 
+            "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
+            "Targets", "Notes"
+        ])
+        # Displaying a clean table of the 9-group scores
+        st.dataframe(df[["Name", "Date", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "Targets"]])
+    else:
+        st.info("No data in the database yet. Run an analysis to see results here.")

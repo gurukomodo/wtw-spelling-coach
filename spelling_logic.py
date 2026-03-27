@@ -12,7 +12,8 @@ def get_target_words(file_name="primary_inventory.txt"):
     folder_path = os.path.join("assessments", file_name)
     try:
         with open(folder_path, "r") as f:
-            return f.read().strip()
+            words = [line.strip() for line in f.readlines() if line.strip()]
+            return ", ".join(words)
     except FileNotFoundError:
         return "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
 
@@ -141,7 +142,7 @@ assessor = Agent(
     You assess each linguistic feature independently.
     """,
     
-    llm="groq/llama-3.3-70b-versatile",
+    llm="llm="groq/llama3-70b-8192"",
     allow_delegation=False
 )
 ''' This is the previous function, it is not robust enough.
@@ -169,42 +170,7 @@ def run_scoring_crew(student_name, transcription_text):
     {transcription_text}
     Compare them to: {CURRENT_TEST_WORDS}
 
-    Evaluate mastery (0–100%) across these linguistic groups:
-
-    Group 0: Phonemic Awareness
-    - Ability to distinguish and manipulate phonemes (IPA-based)
-    - Evidence of confusion in minimal pairs (e.g., /ɪ/ vs /iː/, /θ/ vs /s/)
-
-    Group 1: CVC Mapping
-    - Basic consonant and short vowel spelling (cat, bed, sit)
-    - One-to-one phoneme-grapheme mapping
-
-    Group 2: Digraphs
-    - sh, ch, th, ng
-    - Multi-letter phoneme representation
-
-    Group 3: Silent-e (VCe)
-    - Long vowel patterns (a_e, i_e, o_e, etc.)
-    - Contrast with short vowels
-
-    Group 4: Vowel Teams
-    - ee, ea, ai, oa, ou, oi, etc.
-    - Multiple spellings for same phoneme
-
-    Group 5: R-controlled vowels
-    - ar, or, er, ir, ur
-
-    Group 6: Consonant Clusters
-    - Blends and complex codas (CCVC, CVCC, CCCVC)
-
-    Group 7: Multisyllabic Words
-    - Syllable division (VC/CV, V/CV, VC/V)
-    - Syllable type awareness
-
-    Group 8: Reduction & Morphology
-    - Schwa /ə/, stress patterns
-    - Inflections (-ed, -s, -ing)
-    - Morphological spelling changes
+    Evaluate mastery (0–100%) across linguistic groups (g0 through g8):
 
     IMPORTANT:
     - Distinguish phonological errors (incorrect sound perception/production) from orthographic errors (spelling pattern mistakes)
@@ -218,6 +184,12 @@ def run_scoring_crew(student_name, transcription_text):
     - Score each group (0–100)
     - Suggest 1–3 target groups (NOT necessarily the lowest only—prioritize impact)
     - Provide a concise diagnostic summary
+    
+    STRICT EVIDENCE RULES:
+    1. Only mention an error pattern if you can cite at least TWO words from the student's attempts as proof.
+    2. If a student didn't attempt enough words to judge a category (e.g., no g8 words were tested), score it as 'null' or 0 and state 'Insufficient data'.
+    3. DO NOT assume Mandarin transfer issues (like /θ/) unless the student specifically failed a word containing that phoneme (e.g., 'thorn' or 'with').
+    4. Distinguish between 'Omission' (left the letter out) and 'Substitution' (used the wrong letter).
     """
 
     task = Task(
