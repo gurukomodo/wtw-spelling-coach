@@ -7,3 +7,4 @@ pandas
 pillow  # This handles image files
 litellm
 watchdog
+fastapi

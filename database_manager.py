@@ -28,8 +28,8 @@ def init_db():
             g7_multisyllabic REAL,
             g8_reduction REAL,
             suggested_next TEXT,
-            teacher_notes TEXT
-            teacher_refined_notes TEXT  -- <--- NEW COLUMN
+            teacher_notes TEXT,
+            teacher_refined_notes TEXT 
         )
     ''')
     conn.commit()
@@ -64,24 +64,32 @@ def save_assessment(data, raw_text, teacher_refinement=None):
     conn.close()
 
 def get_all_latest_results():
-    """Fetches the most recent assessment for every student in the database."""
-    conn = sqlite3.connect(DB_PATH)
+    """Fetches the most recent assessment for every student in the system."""
+    conn = sqlite3.connect(DB_PATH) # <-- Fixed to use your shared DB path
     cursor = conn.cursor()
     
-    # This SQL magic groups by name and picks the one with the highest (latest) ID
     query = '''
         SELECT * FROM assessments 
         WHERE id IN (
             SELECT MAX(id) FROM assessments GROUP BY student_name
         )
-        ORDER BY student_name ASC
     '''
+    
+    try:
+        cursor.execute(query)
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        print(f"Database error: {e}")
+        conn.close()
+        return []
+
 def get_latest_teacher_notes(student_name):
     """Retrieves the most recent teacher-corrected notes for a student."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # We look for the newest entry where the teacher actually wrote something
     query = '''
         SELECT teacher_refined_notes FROM assessments 
         WHERE student_name = ? AND teacher_refined_notes IS NOT NULL 
@@ -92,8 +100,3 @@ def get_latest_teacher_notes(student_name):
     conn.close()
     
     return result[0] if result else None
-
-    cursor.execute(query)
-    results = cursor.fetchall()
-    conn.close()
-    return results

@@ -2,10 +2,10 @@ import pandas as pd
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew
-from database_manager import init_db, get_all_latest_results# <--- 1. Import it
+from database_manager import init_db, get_all_latest_results
 
 # --- INITIALIZE DATABASE ---
-init_db()  # <--- 2. Run it (It creates the tables if they don't exist)
+init_db()  
 
 st.set_page_config(page_title="WTW Coach", page_icon="🍎")
 st.title("🍎 WTW Digital Spelling Coach")
@@ -19,17 +19,14 @@ if "analysis_result" not in st.session_state:
 # Sidebar
 with st.sidebar:
     st.header("📋 Class Settings")
-    # Using a key here ensures Streamlit remembers the name across clicks
     student_name = st.text_input("Student Name (required)", key="name_input")
 
     st.divider()
     
     # THE RESET BUTTON
     if st.button("♻️ Start New Student"):
-        # Clear the memory
         st.session_state.raw_transcription = ""
         st.session_state.analysis_result = None
-        # This force-refreshes the page to a blank state
         st.rerun()
 
 uploaded_file = st.file_uploader("📸 Step 1: Upload Test Photo", type=["jpg", "jpeg", "png"])
@@ -45,19 +42,18 @@ if uploaded_file:
         st.image(clean_img, use_container_width=True)
         if st.button("🔍 Step 2: Read Handwriting"):
             with st.spinner("AI is reading..."):
-                # Save to session state so it persists
                 st.session_state.raw_transcription = transcribe_handwriting(clean_base64)
                 st.rerun() 
 
     with col_text:
         st.subheader("✍️ Step 3: Verify & Edit")
-        # This is the 'edited_text' the Analysis button is looking for
         edited_text = st.text_area(
             "Verify and edit student attempts here:", 
             value=st.session_state.raw_transcription,
             height=400 
         )
 
+    # --- 3. THE ANALYSIS BUTTON ---
     # --- 3. THE ANALYSIS BUTTON ---
     if st.button("🚀 Step 4: Run Analysis"):
         if not student_name:
@@ -69,41 +65,90 @@ if uploaded_file:
                 # We use 'edited_text' here to match the text_area variable above
                 result = run_scoring_crew(student_name, edited_text)
                 
-                # DEBUG: If it's failing, let's see what the AI actually said
                 if result is None:
                     st.error("The AI returned nothing. Check your internet or API key.")
                 else:
                     st.session_state.analysis_result = result
                     
+                    # FALLBACK CHECK: If result isn't a strict object, grab the text!
+                    if not hasattr(result, 'g0_phonemic_awareness') and hasattr(result, 'raw'):
+                        st.warning("⚠️ The AI struggled to structure the scores perfectly, but here is its raw analysis:")
+                        st.info(result.raw)
+                    
     # --- 4. DISPLAY RESULTS ---
     if st.session_state.analysis_result:
-        data = st.session_state.analysis_result # (Use your existing extraction logic here)
+        data = st.session_state.analysis_result 
 
-        st.subheader(f"📝 Diagnostic for {data.student_name}")
+        st.subheader(f"📝 Diagnostic for {student_name}") # Pulled directly from sidebar to stop crashes
         
-        # 1. Show the AI's suggested scores (Read-only for now)
+        # 1. ATTEMPT TO READ STRUCTURED DATA OR PARSE RAW JSON
+        import json
+        
+        # Pre-fill defaults
+        g_scores = {f"g{i}": 0 for i in range(9)}
+        notes = "No notes generated."
+        targets = []
+        
+        # Scenario A: Crew AI successfully mapped to Pydantic
+        if hasattr(data, 'g0_phonemic_awareness'):
+            g_scores = {
+                "g0": data.g0_phonemic_awareness, "g1": data.g1_cvc_mapping, "g2": data.g2_digraphs,
+                "g3": data.g3_silent_e, "g4": data.g4_vowel_teams, "g5": data.g5_r_controlled,
+                "g6": data.g6_clusters, "g7": data.g7_multisyllabic, "g8": data.g8_reduction_morphology
+            }
+            notes = data.teacher_notes
+            targets = data.suggested_next_groups
+            
+        # Scenario B: Crew AI returned a raw JSON string like it just did for Alice!
+        elif hasattr(data, 'raw') and data.raw:
+            try:
+                raw_json = json.loads(data.raw)
+                g_scores = {
+                    "g0": raw_json.get("g0_phonemic_awareness", 0),
+                    "g1": raw_json.get("g1_cvc_mapping", 0),
+                    "g2": raw_json.get("g2_digraphs", 0),
+                    "g3": raw_json.get("g3_silent_e", 0),
+                    "g4": raw_json.get("g4_vowel_teams", 0),
+                    "g5": raw_json.get("g5_r_controlled", 0),
+                    "g6": raw_json.get("g6_clusters", 0),
+                    "g7": raw_json.get("g7_multisyllabic", 0),
+                    "g8": raw_json.get("g8_reduction_morphology", 0)
+                }
+                notes = raw_json.get("teacher_notes", "No notes generated.")
+                targets = raw_json.get("suggested_next_groups", [])
+            except:
+                notes = "AI returned text but couldn't parse scores automatically. See below."
+
+        # Display the scores in the clean UI metrics
         cols = st.columns(3)
-        cols[0].metric("g0: Phonemic", f"{data.g0_phonemic_awareness}%")
-        # ... (Include your other metric columns here)
+        cols[0].metric("g0: Phonemic", f"{g_scores['g0']}%")
+        cols[1].metric("g1: CVC", f"{g_scores['g1']}%")
+        cols[2].metric("g2: Digraphs", f"{g_scores['g2']}%")
+        
+        cols2 = st.columns(3)
+        cols2[0].metric("g3: Silent E", f"{g_scores['g3']}%")
+        cols2[1].metric("g4: Vowel Teams", f"{g_scores['g4']}%")
+        cols2[2].metric("g5: R-Controlled", f"{g_scores['g5']}%")
+        
+        cols3 = st.columns(3)
+        cols3[0].metric("g6: Clusters", f"{g_scores['g6']}%")
+        cols3[1].metric("g7: Multisyllabic", f"{g_scores['g7']}%")
+        cols3[2].metric("g8: Reduction", f"{g_scores['g8']}%")
 
-        # 2. THE FEEDBACK LOOP: Editable Notes
-        st.write("### 👩‍🏫 Teacher Refinement")
-        st.caption("Edit the notes below to correct any AI hallucinations (e.g., removing unproven /θ/ mentions).")
-        
-        if st.session_state.analysis_result:
-        # 1. (Assuming 'data' and 'edited_text' are already defined above)
-        
-        st.subheader(f"📝 Diagnostic for {data.student_name}")
-        
+        # Recommendations
+        st.subheader("🎯 Instructional Targets")
+        st.info(f"Priority Groups: {', '.join(targets) if targets else 'None suggested.'}")
+            
         # 2. THE FEEDBACK LOOP: The "Gold Standard" Editor
         st.write("### 👩‍🏫 Teacher Refinement")
-        st.caption("Edit the AI's notes below to correct hallucinations before saving.")
+        st.caption("Review the AI's notes above. Use the text box below to correct hallucinations and record your final diagnostic decision.")
         
-        # We only need ONE text_area. 
-        # It starts with the AI's 'teacher_notes' as the default value.
+        # We give them placeholder text if the AI didn't return a perfect string!
+        default_text_area_val = notes if notes != "No notes generated." else "Type your own diagnostic notes here for this student..."
+        
         final_notes = st.text_area(
             "Final Diagnostic Notes (The 'Gold Standard')", 
-            value=data.teacher_notes, 
+            value=default_text_area_val, 
             height=250
         )
 
@@ -111,29 +156,30 @@ if uploaded_file:
         if st.button("💾 Confirm & Save to Student History"):
             from database_manager import save_assessment
             
-            # We pass 'data' (the scores), 'edited_text' (the transcript), 
-            # and 'final_notes' (YOUR refined version).
-            save_assessment(data, edited_text, teacher_refinement=final_notes)
-            
-            st.success(f"✅ Final assessment for {data.student_name} has been saved to the database!")
-            st.balloons() # Optional: A little celebration for finishing a student!
+            # Since the database expects a structured object, we can build a fake one 
+            # with our extracted data to pass to save_assessment safely!
+            class SaveObject:
+                pass
+            save_obj = SaveObject()
+            save_obj.student_name = student_name
+            save_obj.suggested_next_groups = targets
+            save_obj.teacher_notes = notes
+            save_obj.g0_phonemic_awareness = g_scores["g0"]
+            save_obj.g1_cvc_mapping = g_scores["g1"]
+            save_obj.g2_digraphs = g_scores["g2"]
+            save_obj.g3_silent_e = g_scores["g3"]
+            save_obj.g4_vowel_teams = g_scores["g4"]
+            save_obj.g5_r_controlled = g_scores["g5"]
+            save_obj.g6_clusters = g_scores["g6"]
+            save_obj.g7_multisyllabic = g_scores["g7"]
+            save_obj.g8_reduction_morphology = g_scores["g8"]
 
-        if st.button("💾 Confirm & Save to Student History"):
-            from database_manager import save_assessment
-            # We pass the 'final_notes' separately so the DB saves your version
-            save_assessment(data, edited_text, teacher_refinement=final_notes)
-            st.success(f"Final assessment for {data.student_name} saved!")
-
-            # Recommendations
-            st.subheader("🎯 Instructional Targets")
-            st.info(f"Priority Groups: {', '.join(data.suggested_next_groups)}")
+            save_assessment(save_obj, edited_text, teacher_refinement=final_notes)
             
-            with st.expander("📝 Diagnostic Teacher Notes"):
-                st.write(data.teacher_notes)
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+            st.success(f"✅ Final assessment for {student_name} has been saved to the database!")
+            st.balloons() 
             
+# --- 5. CLASS OVERVIEW ---
 st.divider()
 st.header("📊 Step 2: Class Analysis & Grouping")
 
@@ -141,8 +187,6 @@ if st.button("🔄 Refresh Class Overview"):
     data = get_all_latest_results()
     
     if data:
-        # Note: Ensure the columns list matches the order in your SQL SELECT *
-        # Based on our new schema: [ID, Name, Date, Transcription, g0...g8, Suggested, AI_Notes, Refined_Notes]
         df = pd.DataFrame(data, columns=[
             "ID", "Name", "Date", "Transcription", 
             "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
@@ -150,8 +194,6 @@ if st.button("🔄 Refresh Class Overview"):
         ])
         
         # Create a 'Final Summary' column that prefers your edits
-        df['Final Summary'] = df['Refined_Notes'].fillna(df['AI_Notes'] + " (AI Unrefined)")
-        # If Refined_Notes is just an empty string, we also want to handle that:
         df['Final Summary'] = df.apply(
             lambda x: x['Refined_Notes'] if x['Refined_Notes'] and len(x['Refined_Notes']) > 5 
             else f"⚠️ Review Needed: {x['AI_Notes']}", axis=1
@@ -168,4 +210,4 @@ if st.button("🔄 Refresh Class Overview"):
                 st.write(row['Final Summary'])
             
     else:
-        st.info("No student data found. Run an analysis to see the class overview.")
+        st.info("No student data found. Run an assessment to see the class overview.")

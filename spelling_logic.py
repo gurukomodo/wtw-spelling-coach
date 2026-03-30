@@ -169,43 +169,24 @@ def run_scoring_crew(student_name, transcription_text):
     past_feedback = get_latest_teacher_notes(student_name)
     feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR THIS STUDENT: {past_feedback}" if past_feedback else ""
 
+    # 2. DEFINE THE INSTRUCTIONS
     task_description = f"""
     {feedback_context}
     
-    Analyze {student_name}'s attempts: {transcription_text}
-    
-    STRICT RULES:
-    - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 
-      corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error.
-    - Base all notes on VISIBLE EVIDENCE in the current {transcription_text}.
-    """
-    
-    task_description = f"""
     Analyze the following spelling attempts for {student_name}:
-
     {transcription_text}
+    
     Compare them to: {CURRENT_TEST_WORDS}
 
-    Evaluate mastery (0–100%) across linguistic groups (g0 through g8):
-
-    IMPORTANT:
-    - Distinguish phonological errors (incorrect sound perception/production) from orthographic errors (spelling pattern mistakes)
-    - Consider ESL-specific issues (Mandarin L1 transfer):
-        * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
-        * Final consonant omission
-        * Vowel reduction absence
-    - A student may be strong in some higher groups while weak in earlier ones
-
-    Output:
-    - Score each group (0–100)
-    - Suggest 1–3 target groups (NOT necessarily the lowest only—prioritize impact)
-    - Provide a concise diagnostic summary
+    STRICT RULES:
+    - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 
+      corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
+    - Base all notes on VISIBLE EVIDENCE in the current {transcription_text}.
     
-    STRICT EVIDENCE RULES:
-    1. Only mention an error pattern if you can cite at least TWO words from the student's attempts as proof.
-    2. If a student didn't attempt enough words to judge a category (e.g., no g8 words were tested), score it as 'null' or 0 and state 'Insufficient data'.
-    3. DO NOT assume Mandarin transfer issues (like /θ/) unless the student specifically failed a word containing that phoneme (e.g., 'thorn' or 'with').
-    4. Distinguish between 'Omission' (left the letter out) and 'Substitution' (used the wrong letter).
+    INSTRUCTIONS:
+    Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
+    - Score each group (0–100)
+    - Provide a concise diagnostic summary in the 'teacher_notes' field.
     """
 
     task = Task(
@@ -215,6 +196,34 @@ def run_scoring_crew(student_name, transcription_text):
         output_json=AssessmentSchema
     )
 
+    # 3. KICK OFF THE CREW SAFELY
     crew = Crew(agents=[assessor], tasks=[task])
-    return crew.kickoff()
-    return result
+    
+    try:
+        crew_output = crew.kickoff()
+        
+        # If the crew actually gave us back the perfect structured Pydantic object:
+        if hasattr(crew_output, 'pydantic') and crew_output.pydantic is not None:
+            return crew_output.pydantic
+            
+        # If it just gave us raw text but didn't structure it:
+        if hasattr(crew_output, 'raw') and crew_output.raw:
+            return crew_output
+            
+        # Fallback if it returned something weird
+        return crew_output
+        
+    except Exception as e:
+        print(f"Crew execution error recorded: {e}")
+        # Return a fake object so app.py doesn't see 'None' and crash!
+        class FallbackResult:
+            student_name = student_name
+            teacher_notes = f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually."
+            suggested_next_groups = []
+            # Fill in 0s so the UI metrics don't break
+            g0_phonemic_awareness = 0; g1_cvc_mapping = 0; g2_digraphs = 0
+            g3_silent_e = 0; g4_vowel_teams = 0; g5_r_controlled = 0
+            g6_clusters = 0; g7_multisyllabic = 0; g8_reduction_morphology = 0
+            raw = f"Analysis timed out or failed. Technical details: {e}"
+            
+        return FallbackResult()
