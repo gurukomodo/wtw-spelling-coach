@@ -100,3 +100,42 @@ def get_latest_teacher_notes(student_name):
     conn.close()
     
     return result[0] if result else None
+
+def generate_class_groups():
+    """Reads all latest student results and organizes students by target groups."""
+    results = get_all_latest_results()
+    
+    if not results:
+        return {}
+        
+    # Mapping group names to clean display titles
+    group_titles = {
+        "g0": "Group 0: Phonemic Awareness",
+        "g1": "Group 1: Basic CVC Mapping",
+        "g2": "Group 2: Digraphs",
+        "g3": "Group 3: Silent E",
+        "g4": "Group 4: Vowel Teams",
+        "g5": "Group 5: R-Controlled",
+        "g6": "Group 6: Clusters/Blends",
+        "g7": "Group 7: Multisyllabic",
+        "g8": "Group 8: Reduction & Morphology"
+    }
+    
+    # Initialize our groups dictionary
+    groups = {title: [] for title in group_titles.values()}
+    
+    for row in results:
+        student_name = row[1] # student_name is column 1
+        suggested_string = row[13] # suggested_next is column 13
+        
+        if suggested_string:
+            # Clean up the string (e.g. "g1, g2" -> ["g1", "g2"])
+            target_areas = [area.strip() for area in suggested_string.split(",")]
+            
+            for area in target_areas:
+                if area in group_titles:
+                    display_title = group_titles[area]
+                    groups[display_title].append(student_name)
+                    
+    # Remove empty groups before returning so we only see active groups
+    return {k: v for k, v in groups.items() if v}

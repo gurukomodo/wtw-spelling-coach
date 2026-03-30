@@ -156,13 +156,23 @@ if uploaded_file:
         if st.button("💾 Confirm & Save to Student History"):
             from database_manager import save_assessment
             
+            # Clean up the suggested groups so they are just "g1", "g2", etc.
+            cleaned_targets = []
+            if targets:
+                for target in targets:
+                    # If it looks like "g2_digraphs", just grab the "g2" part
+                    if "_" in target:
+                        cleaned_targets.append(target.split("_")[0])
+                    else:
+                        cleaned_targets.append(target)
+
             # Since the database expects a structured object, we can build a fake one 
             # with our extracted data to pass to save_assessment safely!
             class SaveObject:
                 pass
             save_obj = SaveObject()
             save_obj.student_name = student_name
-            save_obj.suggested_next_groups = targets
+            save_obj.suggested_next_groups = cleaned_targets # Uses our newly cleaned list!
             save_obj.teacher_notes = notes
             save_obj.g0_phonemic_awareness = g_scores["g0"]
             save_obj.g1_cvc_mapping = g_scores["g1"]
@@ -176,38 +186,52 @@ if uploaded_file:
 
             save_assessment(save_obj, edited_text, teacher_refinement=final_notes)
             
-            st.success(f"✅ Final assessment for {student_name} has been saved to the database!")
-            st.balloons() 
+            st.success(f"✅ Final assessment for {student_name} has been saved with clean tags!")
+            st.balloons()
             
-# --- 5. CLASS OVERVIEW ---
-st.divider()
-st.header("📊 Step 2: Class Analysis & Grouping")
-
-if st.button("🔄 Refresh Class Overview"):
-    data = get_all_latest_results()
+# --- STEP 2: CLASS ANALYSIS ---
+    st.header("📊 Class Overview & Grouping")
     
-    if data:
-        df = pd.DataFrame(data, columns=[
-            "ID", "Name", "Date", "Transcription", 
-            "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
-            "Suggested", "AI_Notes", "Refined_Notes"
-        ])
+    if st.button("🔄 Refresh Class Overview"):
+        from database_manager import get_all_latest_results, generate_class_groups
         
-        # Create a 'Final Summary' column that prefers your edits
-        df['Final Summary'] = df.apply(
-            lambda x: x['Refined_Notes'] if x['Refined_Notes'] and len(x['Refined_Notes']) > 5 
-            else f"⚠️ Review Needed: {x['AI_Notes']}", axis=1
-        )
-
-        # 1. Show the Scores Table
-        st.subheader("Current Linguistic Profiles")
-        st.dataframe(df[["Name", "Date", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"]])
+        data = get_all_latest_results()
         
-        # 2. Show the "Teacher-Approved" Notes
-        st.subheader("Instructional Snapshots")
-        for index, row in df.iterrows():
-            with st.expander(f"👤 {row['Name']} - {row['Suggested']}"):
-                st.write(row['Final Summary'])
+        if not data:
+            st.info("No student data found. Save an assessment first!")
+        else:
+            # 1. Draw the Master Table
+            df = pd.DataFrame(data, columns=[
+                "ID", "Student", "Date", "Raw Text", 
+                "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
+                "Suggested", "Notes", "Refined Notes"
+            ])
             
-    else:
-        st.info("No student data found. Run an assessment to see the class overview.")
+            # Show the table but hide the database IDs and raw transcriptions for a cleaner look
+            st.dataframe(df.drop(columns=["ID", "Raw Text", "Notes"]))
+            
+            st.markdown("---")
+            
+            # 2. Draw the Physical Teaching Groups!
+            st.subheader("🎯 Auto-Generated Teaching Groups")
+            st.caption("Students are grouped here based on the targeted G-levels suggested by the AI.")
+            
+            teaching_groups = generate_class_groups()
+            
+            if not teaching_groups:
+                st.warning("No teaching groups could be formed. Ensure students have 'Suggested' targets saved.")
+            else:
+                # Let's display them in a dynamic grid of columns
+                cols = st.columns(3)
+                col_idx = 0
+                
+                for group_name, students in teaching_groups.items():
+                    with cols[col_idx]:
+                        # A nice clean card for each group
+                        st.markdown(f"### {group_name}")
+                        for student in students:
+                            st.markdown(f"- **{student}**")
+                        st.write("") # Add spacing
+                    
+                    # Cycle through the 3 columns
+                    col_idx = (col_idx + 1) % 3
