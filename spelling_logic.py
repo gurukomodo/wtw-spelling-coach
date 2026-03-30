@@ -183,10 +183,27 @@ def run_scoring_crew(student_name, transcription_text):
       corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
     - Base all notes on VISIBLE EVIDENCE in the current {transcription_text}.
     
+    FORMATTING RULES (CRITICAL):
+    - When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
+    - When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
+    - Always provide at least TWO written examples from the student's attempts to prove an error pattern exists.
+
     INSTRUCTIONS:
     Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
+    - Distinguish phonological errors (sound perception/production) from orthographic errors (spelling pattern mistakes)
+    - Pay CLOSE attention to Group 6 (Clusters/Blends). For Mandarin L1 speakers, look for:
+        * Consonant Cluster Reduction (e.g., dropping the /t/ in /st/ and writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
+        * Epenthesis (putting a vowel in a blend, e.g., 'seled' for 'sled').
+    - Consider other ESL-specific issues (Mandarin L1 transfer):
+        * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
+        * Final consonant omission
+        * Vowel reduction absence
+    - A student may be strong in some higher groups while weak in earlier ones
+
+    Output Requirements:
     - Score each group (0–100)
-    - Provide a concise diagnostic summary in the 'teacher_notes' field.
+    - Suggest 1–3 target groups (NOT necessarily the lowest only—prioritize impact)
+    - Provide a concise diagnostic summary in the 'teacher_notes' field using the formatting rules above.
     """
 
     task = Task(
