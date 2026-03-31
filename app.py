@@ -23,6 +23,20 @@ with st.sidebar:
 
     st.divider()
     
+    # Group Legend
+    st.write("**📚 Diagnostic Groups**")
+    st.caption("G0 Phonemic Awareness")
+    st.caption("G1 Basic CVC Mapping")
+    st.caption("G2 Digraphs")
+    st.caption("G3 Silent E")
+    st.caption("G4 Vowel Teams")
+    st.caption("G5 R-Controlled")
+    st.caption("G6 Clusters (Blends)")
+    st.caption("G7 Multisyllabic")
+    st.caption("G8 Reduction & Morphology")
+    
+    st.divider()
+    
     # THE RESET BUTTON
     if st.button("♻️ Start New Student"):
         st.session_state.raw_transcription = ""
@@ -137,7 +151,29 @@ if uploaded_file:
 
         # Recommendations
         st.subheader("🎯 Instructional Targets")
-        st.info(f"Priority Groups: {', '.join(targets) if targets else 'None suggested.'}")
+        
+        # Mapping from ugly g-names to pretty human-readable titles
+        GROUP_NAME_MAP = {
+            "g0": "G0 Phonemic Awareness",
+            "g1": "G1 Basic CVC Mapping",
+            "g2": "G2 Digraphs",
+            "g3": "G3 Silent E",
+            "g4": "G4 Vowel Teams",
+            "g5": "G5 R-Controlled",
+            "g6": "G6 Clusters (Blends)",
+            "g7": "G7 Multisyllabic",
+            "g8": "G8 Reduction & Morphology"
+        }
+        
+        # Create checkboxes for each group, pre-checked if AI suggested them
+        selected_targets = []
+        for g_key, pretty_name in GROUP_NAME_MAP.items():
+            is_checked = g_key in targets
+            if st.checkbox(pretty_name, value=is_checked, key=f"target_{g_key}"):
+                selected_targets.append(g_key)
+        
+        # Use the checkbox selections as the targets
+        targets = selected_targets
             
         # 2. THE FEEDBACK LOOP: The "Gold Standard" Editor
         st.write("### 👩‍🏫 Teacher Refinement")
@@ -156,15 +192,8 @@ if uploaded_file:
         if st.button("💾 Confirm & Save to Student History"):
             from database_manager import save_assessment
             
-            # Clean up the suggested groups so they are just "g1", "g2", etc.
-            cleaned_targets = []
-            if targets:
-                for target in targets:
-                    # If it looks like "g2_digraphs", just grab the "g2" part
-                    if "_" in target:
-                        cleaned_targets.append(target.split("_")[0])
-                    else:
-                        cleaned_targets.append(target)
+            # targets is already clean (g0, g1, etc.) from the checkboxes
+            cleaned_targets = targets
 
             # Since the database expects a structured object, we can build a fake one 
             # with our extracted data to pass to save_assessment safely!
