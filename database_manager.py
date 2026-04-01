@@ -102,7 +102,10 @@ def get_latest_teacher_notes(student_name):
     return result[0] if result else None
 
 def generate_class_groups():
-    """Reads all latest student results and organizes students by target groups."""
+    """Reads all latest student results and organizes students by target groups.
+    Each student is placed in exactly ONE group (the lowest numbered tag).
+    Students with no tags are placed in 'Review Needed'.
+    """
     results = get_all_latest_results()
     
     if not results:
@@ -121,8 +124,9 @@ def generate_class_groups():
         "g8": "Group 8: Reduction & Morphology"
     }
     
-    # Initialize our groups dictionary
+    # Initialize our groups dictionary (including Review Needed fallback)
     groups = {title: [] for title in group_titles.values()}
+    groups["Review Needed"] = []
     
     for row in results:
         student_name = row[1] # student_name is column 1
@@ -132,10 +136,21 @@ def generate_class_groups():
             # Clean up the string (e.g. "g1, g2" -> ["g1", "g2"])
             target_areas = [area.strip() for area in suggested_string.split(",")]
             
-            for area in target_areas:
-                if area in group_titles:
-                    display_title = group_titles[area]
-                    groups[display_title].append(student_name)
+            # Filter to only valid g0-g8 tags
+            valid_tags = [area for area in target_areas if area in group_titles]
+            
+            if valid_tags:
+                # Sort by group number and pick the lowest (e.g., g2 before g6)
+                valid_tags.sort(key=lambda x: int(x[1:]))  # Sort by the number after 'g'
+                lowest_group = valid_tags[0]
+                display_title = group_titles[lowest_group]
+                groups[display_title].append(student_name)
+            else:
+                # No valid g0-g8 tags found, put in Review Needed
+                groups["Review Needed"].append(student_name)
+        else:
+            # No suggested groups at all, put in Review Needed
+            groups["Review Needed"].append(student_name)
                     
     # Remove empty groups before returning so we only see active groups
     return {k: v for k, v in groups.items() if v}

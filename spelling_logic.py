@@ -192,18 +192,22 @@ def run_scoring_crew(student_name, transcription_text):
     Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
     - Distinguish phonological errors (sound perception/production) from orthographic errors (spelling pattern mistakes)
     - Pay CLOSE attention to Group 6 (Clusters/Blends). For Mandarin L1 speakers, look for:
-        * Consonant Cluster Reduction (e.g., dropping the /t/ in /st/ and writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
-        * Epenthesis (putting a vowel in a blend, e.g., 'seled' for 'sled').
+        * Omitted letters in consonant blends (e.g., writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
+        * Extra vowels inserted in blends (e.g., 'seled' for 'sled').
     - Consider other ESL-specific issues (Mandarin L1 transfer):
         * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
         * Final consonant omission
         * Vowel reduction absence
     - A student may be strong in some higher groups while weak in earlier ones
 
-    Output Requirements:
-    - Score each group (0–100)
-    - Suggest 1–3 target groups (NOT necessarily the lowest only—prioritize impact)
-    - Provide a concise diagnostic summary in the 'teacher_notes' field using the formatting rules above.
+    CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
+
+    CRITICAL: You MUST reply with a valid JSON object only.
+    Follow this exact structure:
+    {{
+        "suggested_next_groups": ["g1", "g2"],
+        "raw_analysis": "Your analysis text goes here."
+    }}
     """
 
     task = Task(

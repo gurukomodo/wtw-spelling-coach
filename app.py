@@ -3,6 +3,9 @@ import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew
 from database_manager import init_db, get_all_latest_results
+import random
+import os
+from datetime import datetime
 
 # --- INITIALIZE DATABASE ---
 init_db()  
@@ -10,30 +13,172 @@ init_db()
 st.set_page_config(page_title="WTW Coach", page_icon="🍎")
 st.title("🍎 WTW Digital Spelling Coach")
 
+# --- PRINTER MODE TOGGLE ---
+printer_mode = st.checkbox("🖨️ Enable Printer Mode", help="Hide all UI elements and show only student practice slips for clean printing")
+
 # --- 1. INITIALIZE ALL MEMORY ---
 if "raw_transcription" not in st.session_state:
     st.session_state.raw_transcription = ""
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
+if "practice_lists" not in st.session_state:
+    st.session_state.practice_lists = None
+if "diagnostic_test" not in st.session_state:
+    st.session_state.diagnostic_test = None
 
-# Sidebar
-with st.sidebar:
-    st.header("📋 Class Settings")
-    student_name = st.text_input("Student Name (required)", key="name_input")
-
-    st.divider()
+# --- MAIN APP CONTENT (Hidden in Printer Mode) ---
+if not printer_mode:
+    # Sidebar
+    with st.sidebar:
+        st.header("📋 Class Settings")
+        student_name = st.text_input("Student Name (required)", key="name_input")
     
-    # Group Legend
-    st.write("**📚 Diagnostic Groups**")
-    st.caption("G0 Phonemic Awareness")
-    st.caption("G1 Basic CVC Mapping")
-    st.caption("G2 Digraphs")
-    st.caption("G3 Silent E")
-    st.caption("G4 Vowel Teams")
-    st.caption("G5 R-Controlled")
-    st.caption("G6 Clusters (Blends)")
-    st.caption("G7 Multisyllabic")
-    st.caption("G8 Reduction & Morphology")
+        st.divider()
+        
+        # Group Legend
+        st.write("**📚 Diagnostic Groups**")
+        st.caption("G0 Phonemic Awareness")
+        st.caption("G1 Basic CVC Mapping")
+        st.caption("G2 Digraphs")
+        st.caption("G3 Silent E")
+        st.caption("G4 Vowel Teams")
+        st.caption("G5 R-Controlled")
+        st.caption("G6 Clusters (Blends)")
+        st.caption("G7 Multisyllabic")
+        st.caption("G8 Reduction & Morphology")
+        
+        st.divider()
+        
+        # WORD BANK TOOLS
+        st.write("**🛠️ Word Bank Tools**")
+    
+    if st.button("📝 Generate Group Practice Lists"):
+        with st.spinner("Generating practice lists..."):
+            from database_manager import generate_class_groups
+            
+            # Get active groups (only groups with students assigned)
+            teaching_groups = generate_class_groups()
+            
+            word_banks_path = "word_banks"
+            student_slips = []
+            
+            # Mapping from group titles back to g-keys
+            title_to_key = {
+                "Group 0: Phonemic Awareness": "g0",
+                "Group 1: Basic CVC Mapping": "g1",
+                "Group 2: Digraphs": "g2",
+                "Group 3: Silent E": "g3",
+                "Group 4: Vowel Teams": "g4",
+                "Group 5: R-Controlled": "g5",
+                "Group 6: Clusters/Blends": "g6",
+                "Group 7: Multisyllabic": "g7",
+                "Group 8: Reduction & Morphology": "g8"
+            }
+            
+            # For each active group, get students and generate their slips
+            for group_title, students in teaching_groups.items():
+                g_key = title_to_key.get(group_title)
+                if not g_key:
+                    continue
+                
+                # Load words for this group
+                file_path = os.path.join(word_banks_path, f"{g_key}.txt")
+                if os.path.exists(file_path):
+                    with open(file_path, "r") as f:
+                        words = [line.strip() for line in f.readlines() if line.strip()]
+                        # Get 10 random words (or all if less than 10)
+                        selected = random.sample(words, min(10, len(words)))
+                        
+                        # Create a slip for each student in this group
+                        for student_name in students:
+                            student_slips.append({
+                                "student_name": student_name,
+                                "group_title": group_title,
+                                "words": selected
+                            })
+            
+            st.session_state.practice_lists = student_slips
+            st.rerun()
+    
+    if st.button("📋 Generate New 20-Word Diagnostic Test"):
+        with st.spinner("Creating diagnostic test..."):
+            word_banks_path = "word_banks"
+            test_words = []
+            
+            # 5 words from g1/g2
+            g1_path = os.path.join(word_banks_path, "g1.txt")
+            g2_path = os.path.join(word_banks_path, "g2.txt")
+            g1_words = []
+            g2_words = []
+            if os.path.exists(g1_path):
+                with open(g1_path, "r") as f:
+                    g1_words = [line.strip() for line in f.readlines() if line.strip()]
+            if os.path.exists(g2_path):
+                with open(g2_path, "r") as f:
+                    g2_words = [line.strip() for line in f.readlines() if line.strip()]
+            combined = g1_words + g2_words
+            test_words.extend(random.sample(combined, min(5, len(combined))))
+            
+            # 5 words from g3/g4
+            g3_path = os.path.join(word_banks_path, "g3.txt")
+            g4_path = os.path.join(word_banks_path, "g4.txt")
+            g3_words = []
+            g4_words = []
+            if os.path.exists(g3_path):
+                with open(g3_path, "r") as f:
+                    g3_words = [line.strip() for line in f.readlines() if line.strip()]
+            if os.path.exists(g4_path):
+                with open(g4_path, "r") as f:
+                    g4_words = [line.strip() for line in f.readlines() if line.strip()]
+            combined = g3_words + g4_words
+            test_words.extend(random.sample(combined, min(5, len(combined))))
+            
+            # 5 words from g5/g6
+            g5_path = os.path.join(word_banks_path, "g5.txt")
+            g6_path = os.path.join(word_banks_path, "g6.txt")
+            g5_words = []
+            g6_words = []
+            if os.path.exists(g5_path):
+                with open(g5_path, "r") as f:
+                    g5_words = [line.strip() for line in f.readlines() if line.strip()]
+            if os.path.exists(g6_path):
+                with open(g6_path, "r") as f:
+                    g6_words = [line.strip() for line in f.readlines() if line.strip()]
+            combined = g5_words + g6_words
+            test_words.extend(random.sample(combined, min(5, len(combined))))
+            
+            # 5 words from g7/g8
+            g7_path = os.path.join(word_banks_path, "g7.txt")
+            g8_path = os.path.join(word_banks_path, "g8.txt")
+            g7_words = []
+            g8_words = []
+            if os.path.exists(g7_path):
+                with open(g7_path, "r") as f:
+                    g7_words = [line.strip() for line in f.readlines() if line.strip()]
+            if os.path.exists(g8_path):
+                with open(g8_path, "r") as f:
+                    g8_words = [line.strip() for line in f.readlines() if line.strip()]
+            combined = g7_words + g8_words
+            test_words.extend(random.sample(combined, min(5, len(combined))))
+            
+            # Save to assessments folder
+            assessments_folder = "assessments"
+            if not os.path.exists(assessments_folder):
+                os.makedirs(assessments_folder)
+            
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name = f"dynamic_test_{date_str}.txt"
+            file_path = os.path.join(assessments_folder, file_name)
+            
+            with open(file_path, "w") as f:
+                for word in test_words:
+                    f.write(word + "\n")
+            
+            st.session_state.diagnostic_test = {
+                "words": test_words,
+                "file_name": file_name
+            }
+            st.rerun()
     
     st.divider()
     
@@ -41,6 +186,8 @@ with st.sidebar:
     if st.button("♻️ Start New Student"):
         st.session_state.raw_transcription = ""
         st.session_state.analysis_result = None
+        st.session_state.practice_lists = None
+        st.session_state.diagnostic_test = None
         st.rerun()
 
 uploaded_file = st.file_uploader("📸 Step 1: Upload Test Photo", type=["jpg", "jpeg", "png"])
@@ -76,6 +223,8 @@ if uploaded_file:
             st.warning("⚠️ No text to analyze. Please read handwriting or type manually.")
         else:
             with st.spinner(f"Analyzing {student_name}..."):
+                # Save the edited text to session state so it persists after analysis
+                st.session_state.edited_transcription = edited_text
                 # We use 'edited_text' here to match the text_area variable above
                 result = run_scoring_crew(student_name, edited_text)
                 
@@ -83,11 +232,6 @@ if uploaded_file:
                     st.error("The AI returned nothing. Check your internet or API key.")
                 else:
                     st.session_state.analysis_result = result
-                    
-                    # FALLBACK CHECK: If result isn't a strict object, grab the text!
-                    if not hasattr(result, 'g0_phonemic_awareness') and hasattr(result, 'raw'):
-                        st.warning("⚠️ The AI struggled to structure the scores perfectly, but here is its raw analysis:")
-                        st.info(result.raw)
                     
     # --- 4. DISPLAY RESULTS ---
     if st.session_state.analysis_result:
@@ -115,6 +259,7 @@ if uploaded_file:
             
         # Scenario B: Crew AI returned a raw JSON string like it just did for Alice!
         elif hasattr(data, 'raw') and data.raw:
+            import re
             try:
                 raw_json = json.loads(data.raw)
                 g_scores = {
@@ -131,7 +276,13 @@ if uploaded_file:
                 notes = raw_json.get("teacher_notes", "No notes generated.")
                 targets = raw_json.get("suggested_next_groups", [])
             except:
+                # Fallback: silently extract g0-g8 mentions from raw_analysis using regex
                 notes = "AI returned text but couldn't parse scores automatically. See below."
+                # Extract any mentions of g0 through g8 from the raw text
+                raw_text = data.raw if hasattr(data, 'raw') else str(data)
+                found_groups = re.findall(r'g[0-8]', raw_text)
+                # Remove duplicates while preserving order
+                targets = list(dict.fromkeys(found_groups))
 
         # Display the scores in the clean UI metrics
         cols = st.columns(3)
@@ -175,18 +326,31 @@ if uploaded_file:
         # Use the checkbox selections as the targets
         targets = selected_targets
             
-        # 2. THE FEEDBACK LOOP: The "Gold Standard" Editor
+        # 2. THE FEEDBACK LOOP: The "Gold Standard" Editor (Side-by-Side Layout)
         st.write("### 👩‍🏫 Teacher Refinement")
-        st.caption("Review the AI's notes above. Use the text box below to correct hallucinations and record your final diagnostic decision.")
+        st.caption("Review the AI's notes above. Verify the student's attempts and record your final diagnostic decision.")
         
-        # We give them placeholder text if the AI didn't return a perfect string!
-        default_text_area_val = notes if notes != "No notes generated." else "Type your own diagnostic notes here for this student..."
+        # Create two columns for side-by-side text areas
+        col1, col2 = st.columns(2)
         
-        final_notes = st.text_area(
-            "Final Diagnostic Notes (The 'Gold Standard')", 
-            value=default_text_area_val, 
-            height=250
-        )
+        with col1:
+            # Use the teacher's edited transcription (saved before analysis)
+            edited_text = st.text_area(
+                "Student's Spelling Attempts", 
+                value=st.session_state.get('edited_transcription', st.session_state.raw_transcription),
+                height=400,
+                key="edited_text_final"
+            )
+        
+        with col2:
+            # We give them placeholder text if the AI didn't return a perfect string!
+            default_text_area_val = notes if notes != "No notes generated." else "Type your own diagnostic notes here for this student..."
+            
+            final_notes = st.text_area(
+                "Final Diagnostic Notes (The 'Gold Standard')", 
+                value=default_text_area_val, 
+                height=400
+            )
 
         # 3. THE SAVE BUTTON
         if st.button("💾 Confirm & Save to Student History"):
@@ -219,48 +383,115 @@ if uploaded_file:
             st.balloons()
             
 # --- STEP 2: CLASS ANALYSIS ---
+# This section is now a permanent dashboard at the bottom of the app
+if not printer_mode:
     st.header("📊 Class Overview & Grouping")
     
-    if st.button("🔄 Refresh Class Overview"):
-        from database_manager import get_all_latest_results, generate_class_groups
+    from database_manager import get_all_latest_results, generate_class_groups
+    
+    data = get_all_latest_results()
+    
+    if not data:
+        st.info("No student data found. Save an assessment first!")
+    else:
+        # 1. Draw the Master Table
+        df = pd.DataFrame(data, columns=[
+            "ID", "Student", "Date", "Raw Text", 
+            "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
+            "Suggested", "Notes", "Refined Notes"
+        ])
         
-        data = get_all_latest_results()
+        # Show the table but hide the database IDs and raw transcriptions for a cleaner look
+        st.dataframe(df.drop(columns=["ID", "Raw Text", "Notes"]))
         
-        if not data:
-            st.info("No student data found. Save an assessment first!")
+        st.markdown("---")
+        
+        # 2. Draw the Physical Teaching Groups!
+        st.subheader("🎯 Auto-Generated Teaching Groups")
+        st.caption("Students are grouped here based on the targeted G-levels.")
+        
+        teaching_groups = generate_class_groups()
+        
+        if not teaching_groups:
+            st.warning("No teaching groups could be formed. Ensure students have 'Suggested' targets saved.")
         else:
-            # 1. Draw the Master Table
-            df = pd.DataFrame(data, columns=[
-                "ID", "Student", "Date", "Raw Text", 
-                "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
-                "Suggested", "Notes", "Refined Notes"
-            ])
+            # Let's display them in a dynamic grid of columns
+            cols = st.columns(3)
+            col_idx = 0
             
-            # Show the table but hide the database IDs and raw transcriptions for a cleaner look
-            st.dataframe(df.drop(columns=["ID", "Raw Text", "Notes"]))
-            
-            st.markdown("---")
-            
-            # 2. Draw the Physical Teaching Groups!
-            st.subheader("🎯 Auto-Generated Teaching Groups")
-            st.caption("Students are grouped here based on the targeted G-levels suggested by the AI.")
-            
-            teaching_groups = generate_class_groups()
-            
-            if not teaching_groups:
-                st.warning("No teaching groups could be formed. Ensure students have 'Suggested' targets saved.")
-            else:
-                # Let's display them in a dynamic grid of columns
-                cols = st.columns(3)
-                col_idx = 0
+            for group_name, students in teaching_groups.items():
+                with cols[col_idx]:
+                    # A nice clean card for each group
+                    st.markdown(f"### {group_name}")
+                    for student in students:
+                        st.markdown(f"- **{student}**")
+                    st.write("") # Add spacing
                 
-                for group_name, students in teaching_groups.items():
-                    with cols[col_idx]:
-                        # A nice clean card for each group
-                        st.markdown(f"### {group_name}")
-                        for student in students:
-                            st.markdown(f"- **{student}**")
-                        st.write("") # Add spacing
-                    
-                    # Cycle through the 3 columns
-                    col_idx = (col_idx + 1) % 3
+                # Cycle through the 3 columns
+                col_idx = (col_idx + 1) % 3
+
+# --- PRINTER MODE DISPLAY ---
+# When printer mode is enabled, ONLY show the student practice slips
+if printer_mode:
+    if st.session_state.practice_lists:
+        st.header("📚 Printable Student Practice Slips")
+        st.caption("Print-ready view. Use Cmd+P to print.")
+        
+        for slip in st.session_state.practice_lists:
+            student_name = slip["student_name"]
+            group_title = slip["group_title"]
+            words = slip["words"]
+            
+            # Create a clean, printable slip with spacing for cutting
+            st.markdown("""<div style="border: 2px solid #333; padding: 20px; margin: 30px 0; page-break-inside: avoid; background-color: white;">""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="font-size: 18px; margin-bottom: 15px;"><strong>Name:</strong> _________________________ ({student_name})</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="font-size: 18px; margin-bottom: 20px;"><strong>Target Group:</strong> {group_title}</div>""", unsafe_allow_html=True)
+            st.markdown("""<div style="font-size: 18px; margin-bottom: 15px;"><strong>Practice Words:</strong></div>""", unsafe_allow_html=True)
+            
+            for i, word in enumerate(words, 1):
+                st.markdown(f"""<div style="font-size: 16px; margin: 8px 0;">{i}. {word}</div>""", unsafe_allow_html=True)
+            
+            st.markdown("""</div>""", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)  # Extra spacing for cutting
+    else:
+        st.info("📝 No practice slips generated yet. Click 'Generate Group Practice Lists' in the sidebar first, then enable Printer Mode.")
+else:
+    # --- WORD BANK TOOLS DISPLAY (Normal Mode) ---
+    # Display practice lists if generated (only when NOT in printer mode)
+    if st.session_state.practice_lists:
+        st.header("📚 Printable Student Practice Slips")
+        st.caption("Printable slips for each student in active groups. Use Cmd+P to print and cut out.")
+        
+        for slip in st.session_state.practice_lists:
+            student_name = slip["student_name"]
+            group_title = slip["group_title"]
+            words = slip["words"]
+            
+            # Create a clean, printable slip with spacing for cutting
+            st.markdown("""<div style="border: 2px solid #333; padding: 20px; margin: 30px 0; page-break-inside: avoid; background-color: white;">""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="font-size: 18px; margin-bottom: 15px;"><strong>Name:</strong> _________________________ ({student_name})</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="font-size: 18px; margin-bottom: 20px;"><strong>Target Group:</strong> {group_title}</div>""", unsafe_allow_html=True)
+            st.markdown("""<div style="font-size: 18px; margin-bottom: 15px;"><strong>Practice Words:</strong></div>""", unsafe_allow_html=True)
+            
+            for i, word in enumerate(words, 1):
+                st.markdown(f"""<div style="font-size: 16px; margin: 8px 0;">{i}. {word}</div>""", unsafe_allow_html=True)
+            
+            st.markdown("""</div>""", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)  # Extra spacing for cutting
+        
+        st.divider()
+    
+    # Display diagnostic test if generated (only in normal mode)
+    if st.session_state.diagnostic_test:
+        st.header("📋 New Diagnostic Test")
+        st.caption(f"Generated test saved as: {st.session_state.diagnostic_test['file_name']}")
+        
+        st.subheader("20-Word Diagnostic Test")
+        st.write("**Instructions:** Read these words aloud to the student and have them spell each one.")
+        
+        # Display words in a numbered list
+        for i, word in enumerate(st.session_state.diagnostic_test['words'], 1):
+            st.write(f"{i}. {word}")
+        
+        st.success(f"✅ Test saved to assessments/{st.session_state.diagnostic_test['file_name']}")
+        st.divider()
