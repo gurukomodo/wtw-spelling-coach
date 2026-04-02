@@ -4,7 +4,7 @@ from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List
-from database_manager import get_latest_teacher_notes
+from database_manager import get_latest_teacher_notes, get_struggling_words
 
 load_dotenv()
 
@@ -248,3 +248,189 @@ def run_scoring_crew(student_name, transcription_text):
             raw = f"Analysis timed out or failed. Technical details: {e}"
             
         return FallbackResult()
+
+# --- 5. PERSONALIZED WORD GENERATION ---
+# Agent for generating personalized practice words
+word_generator = Agent(
+    role="Personalized Spelling Word Selector",
+    goal="Generate 10 highly targeted spelling words for a specific student based on their G-level and struggle areas",
+    backstory="""
+    You are an expert literacy specialist who creates personalized word lists for spelling practice.
+    You understand the Words Their Way (WTW) diagnostic groups and how to create effective practice lists.
+    
+    You understand:
+    - G0: Phonemic Awareness (sound manipulation)
+    - G1: Basic CVC Mapping (consonant-short vowel-consonant)
+    - G2: Digraphs (sh, ch, th, ng)
+    - G3: Silent-e (magic e, VCe patterns)
+    - G4: Vowel Teams (ee, ea, ai, oa, ou, oi, etc.)
+    - G5: R-Controlled Vowels (ar, or, er, ir, ur)
+    - G6: Consonant Clusters/Blends (CCVC, CVCC words)
+    - G7: Multisyllabic Words (syllable division)
+    - G8: Reduction & Morphology (schwa, -ed, -ing, etc.)
+    
+    You specialize in ESL/Mandarin L1 learners who have specific phonological and orthographic challenges.
+    """,
+    llm="groq/llama-3.3-70b-versatile",
+    allow_delegation=False
+)
+
+def generate_personalized_practice_words(student_name, target_group, teacher_notes, struggling_words, custom_words_input=None):
+    """
+    Uses AI to generate 10 personalized spelling words based on:
+    - Target G-level (e.g., G4 Vowel Teams)
+    - Teacher's refinement notes (student's background/struggles)
+    - Words student has previously struggled with
+    - Custom words input by teacher
+    
+    Args:
+        student_name: Name of the student
+        target_group: Primary G-level to target (e.g., "g4")
+        teacher_notes: Teacher's refinement notes with background/struggles
+        struggling_words: Words student has struggled with before
+        custom_words_input: Optional comma-separated string of words teacher wants included
+    
+    Returns:
+        List of 10 personalized words, or fallback list if AI fails
+    """
+    
+    # Group descriptions and patterns
+    GROUP_INFO = {
+        "g0": {
+            "name": "Phonemic Awareness",
+            "patterns": "sound segmentation, blending, minimal pairs, phoneme manipulation",
+            "examples": "bat-pat, fan-fan, cat-cut"
+        },
+        "g1": {
+            "name": "Basic CVC Mapping",
+            "patterns": "single consonants and short vowels (CVC words)",
+            "examples": "cat, bed, sit, run, hop, map"
+        },
+        "g2": {
+            "name": "Digraphs",
+            "patterns": "sh, ch, th, ng",
+            "examples": "shop, chip, thin, ring, chin, ship"
+        },
+        "g3": {
+            "name": "Silent-e",
+            "patterns": "a_e, i_e, o_e, u_e (long vowel with silent e)",
+            "examples": "make, bike, hope, cute, cake, side"
+        },
+        "g4": {
+            "name": "Vowel Teams",
+            "patterns": "ee, ea, ai, oa, ou, oi, ay, ey patterns",
+            "examples": "see, sea, rain, boat, sound, coin, day, they"
+        },
+        "g5": {
+            "name": "R-Controlled Vowels",
+            "patterns": "ar, or, er, ir, ur",
+            "examples": "car, fork, her, bird, turn, star, form"
+        },
+        "g6": {
+            "name": "Consonant Clusters/Blends",
+            "patterns": "initial blends (bl, cl, fl, gl, pl, br, cr, dr, fr, gr, pr, tr, st, sk, sl, sw), final clusters",
+            "examples": "sled, stick, swim, dress, crash, plant, sleep"
+        },
+        "g7": {
+            "name": "Multisyllabic Words",
+            "patterns": "compound words, syllable division (VC/CV, V/CV)",
+            "examples": "rainbow, sunshine, basket, pencil, computer"
+        },
+        "g8": {
+            "name": "Reduction & Morphology",
+            "patterns": "schwa, -ed, -ing, -s, -es, prefixes, suffixes",
+            "examples": "walked, jumping, cats, boxes, unhappy, quickly"
+        }
+    }
+    
+    group_key = target_group.lower().strip()
+    group_info = GROUP_INFO.get(group_key, GROUP_INFO["g1"])
+    
+    # Build context for the AI
+    custom_words_context = f"\n\nTEACHER REQUESTED CUSTOM WORDS (must include these):\n{custom_words_input}" if custom_words_input else ""
+    
+    struggling_context = f"\n\nWORDS STUDENT HAS STRUGGLED WITH BEFORE:\n{struggling_words}" if struggling_words else "\n\n(No previous struggling words found in records.)"
+    
+    notes_context = f"\n\nTEACHER NOTES (Student Background & Struggles):\n{teacher_notes}" if teacher_notes else "\n\n(No teacher notes available.)"
+    
+    task_description = f"""
+You are creating a personalized 10-word spelling practice list for a student.
+
+STUDENT: {student_name}
+
+TARGET G-LEVEL: {target_group.upper()} - {group_info['name']}
+Phonetic Patterns to Practice: {group_info['patterns']}
+Example Patterns: {group_info['examples']}{notes_context}{struggling_context}{custom_words_context}
+
+TASK:
+Generate EXACTLY 10 spelling words that:
+1. Practice the target G-level patterns ({group_info['name']})
+2. Address the student's specific struggle areas mentioned in the teacher notes
+3. Include 2-3 words from their previous struggles (for reinforcement/spiral review)
+4. Progress from easier to more challenging
+5. Include at least 1-2 multisyllabic words if the target pattern allows
+6. If custom words were requested, include those words in the list
+
+IMPORTANT:
+- Focus on real, common words that students encounter
+- Each word should reinforce the target pattern
+- Avoid overly obscure words
+- Make words ladder from what they know to new challenges
+
+FORMAT:
+Return ONLY a valid JSON array of 10 words, nothing else.
+Example: ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10"]
+"""
+    
+    task = Task(
+        description=task_description,
+        agent=word_generator,
+        expected_output="A JSON array of exactly 10 personalized spelling words"
+    )
+    
+    crew = Crew(agents=[word_generator], tasks=[task])
+    
+    try:
+        crew_output = crew.kickoff()
+        
+        # Try to parse the JSON response
+        import json
+        output_text = str(crew_output)
+        
+        # Look for JSON array in the response
+        import re
+        json_match = re.search(r'\[.*?\]', output_text, re.DOTALL)
+        
+        if json_match:
+            words = json.loads(json_match.group(0))
+            if isinstance(words, list) and len(words) >= 1:
+                return words[:10]  # Return max 10 words
+        
+        # Fallback: try to extract words another way
+        # Remove brackets and split by comma, then clean up
+        cleaned = output_text.strip('[]').replace('"', '').replace("'", '')
+        words = [w.strip() for w in cleaned.split(',') if w.strip()]
+        if words:
+            return words[:10]
+        
+        # If all parsing fails, return fallback
+        return get_fallback_words(group_key)
+        
+    except Exception as e:
+        print(f"Word generation error: {e}")
+        return get_fallback_words(group_key)
+
+def get_fallback_words(target_group):
+    """Fallback word lists if AI generation fails."""
+    fallback_by_group = {
+        "g0": ["bat", "pat", "cat", "mat", "sat", "hat", "rat", "fat", "vat", "zat"],
+        "g1": ["cat", "bed", "sit", "run", "hop", "map", "red", "big", "sun", "cup"],
+        "g2": ["shop", "chip", "thin", "ring", "chin", "ship", "this", "that", "fish", "wish"],
+        "g3": ["make", "bike", "hope", "cute", "cake", "side", "home", "note", "size", "game"],
+        "g4": ["see", "sea", "rain", "boat", "sound", "day", "green", "team", "play", "snow"],
+        "g5": ["car", "fork", "her", "bird", "turn", "star", "form", "burn", "hard", "work"],
+        "g6": ["sled", "stick", "swim", "dress", "crash", "plant", "sleep", "green", "brick", "flash"],
+        "g7": ["rainbow", "sunshine", "basket", "pencil", "window", "rabbit", "flower", "garden", "purple", "yellow"],
+        "g8": ["walked", "jumping", "cats", "boxes", "unhappy", "quickly", "happier", "largest", "playing", "stopped"]
+    }
+    return fallback_by_group.get(target_group, fallback_by_group["g1"])

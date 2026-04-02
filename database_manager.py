@@ -11,7 +11,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Updated Assessments Table for g0-g8
+    # Updated Assessments Table for g0-g8 with struggling_words column
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS assessments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,13 +29,14 @@ def init_db():
             g8_reduction REAL,
             suggested_next TEXT,
             teacher_notes TEXT,
-            teacher_refined_notes TEXT 
+            teacher_refined_notes TEXT,
+            struggling_words TEXT
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_assessment(data, raw_text, teacher_refinement=None):
+def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -45,8 +46,8 @@ def save_assessment(data, raw_text, teacher_refinement=None):
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
             g4_vowel_teams, g5_r_controlled, g6_clusters, 
             g7_multisyllabic, g8_reduction, suggested_next, 
-            teacher_notes, teacher_refined_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            teacher_notes, teacher_refined_notes, struggling_words
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     '''
     
     suggested_str = ", ".join(data.suggested_next_groups) if data.suggested_next_groups else ""
@@ -56,7 +57,7 @@ def save_assessment(data, raw_text, teacher_refinement=None):
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
         data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
-        suggested_str, data.teacher_notes, teacher_refinement
+        suggested_str, data.teacher_notes, teacher_refinement, struggling_words
     )
     
     cursor.execute(query, values)
@@ -93,6 +94,22 @@ def get_latest_teacher_notes(student_name):
     query = '''
         SELECT teacher_refined_notes FROM assessments 
         WHERE student_name = ? AND teacher_refined_notes IS NOT NULL 
+        ORDER BY id DESC LIMIT 1
+    '''
+    cursor.execute(query, (student_name,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result[0] if result else None
+
+def get_struggling_words(student_name):
+    """Retrieves the most recent struggling words for a student."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    query = '''
+        SELECT struggling_words FROM assessments 
+        WHERE student_name = ? AND struggling_words IS NOT NULL AND struggling_words != ''
         ORDER BY id DESC LIMIT 1
     '''
     cursor.execute(query, (student_name,))
