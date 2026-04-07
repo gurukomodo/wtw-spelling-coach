@@ -5,8 +5,98 @@ from spelling_logic import transcribe_handwriting, run_scoring_crew, generate_pe
 from database_manager import init_db, get_all_latest_results
 import random
 import os
+import csv
+import json
 from datetime import datetime
 
+
+# --- PERSISTENCE HELPERS ---
+PROFILES_CSV = "students.csv"
+SETTINGS_FILE = "settings.json"
+
+def load_settings():
+    """Load class-wide settings from JSON."""
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            st.error(f"Error loading settings: {e}")
+    return {"unit_description": ""}
+
+def save_settings(settings):
+    """Save class-wide settings to JSON."""
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+    except Exception as e:
+        st.error(f"Error saving settings: {e}")
+
+def load_profiles():
+    """Load student profiles from CSV into a dictionary."""
+    profiles = {}
+    if os.path.exists(PROFILES_CSV):
+        try:
+            with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = row.get("Student Name")
+                    if name:
+                        profiles[name] = {
+                            "struggles": row.get("Struggles", ""),
+                            "mastered": row.get("Mastered Words", ""),
+                            "target_group": row.get("Target_Group", "g1")
+                        }
+        except Exception as e:
+            st.error(f"Error loading profiles: {e}")
+    return profiles
+
+def save_profile(name, struggles, mastered, target_group):
+    """Save/Update a student profile in the CSV."""
+    profiles = load_profiles()
+    profiles[name] = {"struggles": struggles, "mastered": mastered, "target_group": target_group}
+    
+    try:
+        with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=["Student Name", "Struggles", "Mastered Words", "Target_Group"])
+            writer.writeheader()
+            for student, data in profiles.items():
+                writer.writerow({
+                    "Student Name": student,
+                    "Struggles": data["struggles"],
+                    "Mastered Words": data["mastered"],
+                    "Target_Group": data["target_group"]
+                })
+    except Exception as e:
+        st.error(f"Error saving profile: {e}")
+
+def generate_groups_from_csv():
+    """Reads student profiles from students.csv and organizes them by Target Group."""
+    profiles = load_profiles()
+    
+    group_titles = {
+        "g0": "Group 0: Phonemic Awareness",
+        "g1": "Group 1: Basic CVC Mapping",
+        "g2": "Group 2: Digraphs",
+        "g3": "Group 3: Silent E",
+        "g4": "Group 4: Vowel Teams",
+        "g5": "Group 5: R-Controlled",
+        "g6": "Group 6: Clusters/Blends",
+        "g7": "Group 7: Multisyllabic",
+        "g8": "Group 8: Reduction & Morphology"
+    }
+    
+    groups = {title: [] for title in group_titles.values()}
+    groups["Review Needed"] = []
+    
+    for name, data in profiles.items():
+        target = data.get("target_group", "").lower().strip()
+        if target in group_titles:
+            groups[group_titles[target]].append(name)
+        else:
+            groups["Review Needed"].append(name)
+            
+    return {k: v for k, v in groups.items() if v}
 
 # --- HELPER: Convert practice lists to transposed DataFrame for Google Sheets ---
 def practice_lists_to_table(practice_lists):
@@ -47,7 +137,12 @@ if "diagnostic_test" not in st.session_state:
 if "struggling_words" not in st.session_state:
     st.session_state.struggling_words = ""
 if "students" not in st.session_state:
-    st.session_state.students = {} # {name: {"struggles": "...", "interests": "..."}}
+    st.session_state.students = load_profiles()
+
+# Initialize Global Settings
+if "unit_description" not in st.session_state:
+    settings = load_settings()
+    st.session_state.unit_description = settings.get("unit_description", "")
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -56,9 +151,15 @@ with st.sidebar:
     # GLOBAL UNIT DESCRIPTION
     unit_desc = st.text_area(
         "🌍 Global Unit Description", 
+        value=st.session_state.unit_description,
         placeholder="e.g., This unit focuses on long-a vowel teams and silent-e in the context of nature and animals.",
-        key="unit_description"
+        key="unit_description_input"
     )
+    
+    # Save globally whenever this changes
+    if unit_desc != st.session_state.unit_description:
+        st.session_state.unit_description = unit_desc
+        save_settings({"unit_description": unit_desc})
 
     st.divider()
     
@@ -80,13 +181,24 @@ with st.sidebar:
             data = st.session_state.students[student_name]
             # Force update the session state keys that the text_areas are bound to
             st.session_state.struggling_words_input = data.get("struggles", "")
-            st.session_state.student_interests_input = data.get("interests", "")
+            st.session_state.mastered_words_input = data.get("mastered", "")
+            st.session_state.target_group_input = data.get("target_group", "g1")
         else:
             # Clear for new student
             st.session_state.struggling_words_input = ""
-            st.session_state.student_interests_input = ""
+            st.session_state.mastered_words_input = ""
+            st.session_state.target_group_input = "g1"
         st.session_state.last_loaded_student = student_name
 
+    st.divider()
+    
+    st.write("**🎯 Target Group**")
+    target_group_input = st.selectbox(
+        "Select student's current G-level",
+        options=[f"g{i}" for i in range(9)],
+        key="target_group_input"
+    )
+    
     st.divider()
     
     # STUDENT STRUGGLING WORDS INPUT
@@ -99,22 +211,27 @@ with st.sidebar:
     )
     
     st.divider()
-    # STUDENT INTERESTS
-    st.write("**🌟 Student Interests & Background**")
-    student_interests_input = st.text_area(
-        "What does the student like? (e.g., Dinosaurs, Space, Minecraft)",
-        placeholder="e.g., Loves space and astronauts",
-        key="student_interests_input"
+    # MASTERED WORDS INPUT
+    st.write("**✅ Mastered Words (Spelled Correctly)**")
+    mastered_words_input = st.text_area(
+        "Enter words the student consistently spells correctly",
+        placeholder="e.g., cat, bed, sit, run (comma-separated)",
+        key="mastered_words_input"
     )
     
     # SAVE STUDENT DATA
     if st.button("💾 Save Student Data"):
         if student_name:
+            # Update session state
             st.session_state.students[student_name] = {
                 "struggles": struggling_words_input,
-                "interests": student_interests_input
+                "mastered": mastered_words_input,
+                "target_group": target_group_input
             }
+            # Persist to CSV
+            save_profile(student_name, struggling_words_input, mastered_words_input, target_group_input)
             st.success(f"Saved data for {student_name}!")
+            st.rerun() # Refresh dropdown and state
         else:
             st.error("Please enter a student name first.")
 
@@ -190,8 +307,8 @@ if st.button("🧠 AI-Generate Personalized Practice Lists"):
                         target_group=g_key,
                         teacher_notes=teacher_notes,
                         struggling_words=combined_struggling,
-                        student_interests=st.session_state.get("student_interests_input", ""),
-                        unit_description=st.session_state.get("unit_description", ""),
+                        mastered_words=st.session_state.get("mastered_words_input", ""),
+                        unit_description=st.session_state.unit_description,
                         custom_words_input=custom_input if custom_input.strip() else None
                     )
                 except Exception as e:
@@ -517,12 +634,15 @@ else:
     
     # 2. Draw the Physical Teaching Groups!
     st.subheader("🎯 Auto-Generated Teaching Groups")
-    st.caption("Students are grouped here based on the targeted G-levels.")
+    st.caption("Students are grouped here based on their saved Target Group in the student profiles.")
     
-    teaching_groups = generate_class_groups()
+    if st.button("🔄 Refresh Teaching Groups"):
+        st.rerun()
+
+    teaching_groups = generate_groups_from_csv()
     
     if not teaching_groups:
-        st.warning("No teaching groups could be formed. Ensure students have 'Suggested' targets saved.")
+        st.warning("No teaching groups could be formed. Ensure students have a Target Group saved in their profiles.")
     else:
         # Let's display them in a dynamic grid of columns
         cols = st.columns(3)

@@ -11,7 +11,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Updated Assessments Table for g0-g8 with struggling_words column
+    # Original initialization
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS assessments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +33,14 @@ def init_db():
             struggling_words TEXT
         )
     ''')
+    
+    # MIGRATION: Ensure struggling_words column exists
+    try:
+        cursor.execute("ALTER TABLE assessments ADD COLUMN struggling_words TEXT")
+    except sqlite3.OperationalError:
+        # Column already exists, ignore error
+        pass
+        
     conn.commit()
     conn.close()
 
