@@ -275,19 +275,23 @@ word_generator = Agent(
     allow_delegation=False
 )
 
-def generate_personalized_practice_words(student_name, target_group, teacher_notes, struggling_words, custom_words_input=None):
+def generate_personalized_practice_words(student_name, target_group, teacher_notes, struggling_words, student_interests="", unit_description="", custom_words_input=None):
     """
     Uses AI to generate 10 personalized spelling words based on:
+    - Unit Description (global class focus)
     - Target G-level (e.g., G4 Vowel Teams)
     - Teacher's refinement notes (student's background/struggles)
-    - Words student has previously struggled with
+    - struggling_words (in 'Correct:Attempt' format) to identify phonetic weaknesses
+    - Student's interests (to theme the words)
     - Custom words input by teacher
     
     Args:
         student_name: Name of the student
         target_group: Primary G-level to target (e.g., "g4")
         teacher_notes: Teacher's refinement notes with background/struggles
-        struggling_words: Words student has struggled with before
+        struggling_words: Words student has struggled with before ('Correct:Attempt' format)
+        student_interests: Interests of the student for themed word generation
+        unit_description: The overall unit or theme for the whole class
         custom_words_input: Optional comma-separated string of words teacher wants included
     
     Returns:
@@ -349,9 +353,13 @@ def generate_personalized_practice_words(student_name, target_group, teacher_not
     # Build context for the AI
     custom_words_context = f"\n\nTEACHER REQUESTED CUSTOM WORDS (must include these):\n{custom_words_input}" if custom_words_input else ""
     
-    struggling_context = f"\n\nWORDS STUDENT HAS STRUGGLED WITH BEFORE:\n{struggling_words}" if struggling_words else "\n\n(No previous struggling words found in records.)"
+    struggling_context = f"\n\nWORDS STUDENT HAS STRUGGLED WITH (Correct:Attempt format):\n{struggling_words}" if struggling_words else "\n\n(No previous struggling words found in records.)"
     
     notes_context = f"\n\nTEACHER NOTES (Student Background & Struggles):\n{teacher_notes}" if teacher_notes else "\n\n(No teacher notes available.)"
+    
+    interests_context = f"\n\nSTUDENT INTERESTS: {student_interests}" if student_interests else "\n\n(No specific interests provided.)"
+    
+    unit_context = f"\n\nGLOBAL UNIT DESCRIPTION: {unit_description}" if unit_description else "\n\n(No global unit description provided.)"
     
     task_description = f"""
 You are creating a personalized 10-word spelling practice list for a student.
@@ -360,22 +368,22 @@ STUDENT: {student_name}
 
 TARGET G-LEVEL: {target_group.upper()} - {group_info['name']}
 Phonetic Patterns to Practice: {group_info['patterns']}
-Example Patterns: {group_info['examples']}{notes_context}{struggling_context}{custom_words_context}
+Example Patterns: {group_info['examples']}{notes_context}{struggling_context}{interests_context}{unit_context}{custom_words_context}
 
 TASK:
-Generate EXACTLY 10 spelling words that:
-1. Practice the target G-level patterns ({group_info['name']})
-2. Address the student's specific struggle areas mentioned in the teacher notes
-3. Include 2-3 words from their previous struggles (for reinforcement/spiral review)
-4. Progress from easier to more challenging
-5. Include at least 1-2 multisyllabic words if the target pattern allows
-6. If custom words were requested, include those words in the list
+1. ANALYZE PHONETIC WEAKNESSES: Closely examine the 'Correct:Attempt' list. Identify specific phonetic gaps (e.g., if the student writes 'sip' for 'ship', they struggle with the <sh> digraph).
+2. GENERATE 10 WORDS: Create a list of 10 spelling words that:
+    - Directly target the phonetic weaknesses found in the 'Correct:Attempt' list.
+    - Align with the {group_info['name']} target patterns.
+    - CONTEXT: Incorporate the Global Unit Description and Student Interests to theme the words. Use the Unit Description as the primary academic context and Student Interests for creative appeal (e.g., if unit is 'Nature' and student loves 'Space', find an intersection or use both).
+    - PROGRESSION: Progress from easier to more challenging.
+    - Include 2-3 words from their previous struggles for reinforcement.
+    - If custom words were requested, include those.
 
 IMPORTANT:
-- Focus on real, common words that students encounter
-- Each word should reinforce the target pattern
-- Avoid overly obscure words
-- Make words ladder from what they know to new challenges
+- Focus on real, common words.
+- Each word must be a viable target for the identified weaknesses.
+- Theme the words creatively but ensure they still accurately target the phonetic pattern.
 
 FORMAT:
 Return ONLY a valid JSON array of 10 words, nothing else.

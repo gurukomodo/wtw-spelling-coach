@@ -46,42 +46,95 @@ if "diagnostic_test" not in st.session_state:
     st.session_state.diagnostic_test = None
 if "struggling_words" not in st.session_state:
     st.session_state.struggling_words = ""
+if "students" not in st.session_state:
+    st.session_state.students = {} # {name: {"struggles": "...", "interests": "..."}}
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("📋 Class Settings")
-    student_name = st.text_input("Student Name (required)", key="name_input")
+    
+    # GLOBAL UNIT DESCRIPTION
+    unit_desc = st.text_area(
+        "🌍 Global Unit Description", 
+        placeholder="e.g., This unit focuses on long-a vowel teams and silent-e in the context of nature and animals.",
+        key="unit_description"
+    )
 
     st.divider()
     
-    # Group Legend
-    st.write("**📚 Diagnostic Groups**")
-    st.caption("G0 Phonemic Awareness")
-    st.caption("G1 Basic CVC Mapping")
-    st.caption("G2 Digraphs")
-    st.caption("G3 Silent E")
-    st.caption("G4 Vowel Teams")
-    st.caption("G5 R-Controlled")
-    st.caption("G6 Clusters (Blends)")
-    st.caption("G7 Multisyllabic")
-    st.caption("G8 Reduction & Morphology")
+    # STUDENT SELECTION
+    existing_students = list(st.session_state.students.keys())
+    selection = st.selectbox("📁 Load Student Profile", options=["None / New Student"] + existing_students)
     
+    if selection != "None / New Student":
+        student_name = selection
+    else:
+        student_name = st.text_input("Student Name (required)", key="name_input")
+
+    # Logic to Load Student Data when name is changed
+    if "last_loaded_student" not in st.session_state:
+        st.session_state.last_loaded_student = ""
+
+    if student_name and student_name != st.session_state.last_loaded_student:
+        if student_name in st.session_state.students:
+            data = st.session_state.students[student_name]
+            # Force update the session state keys that the text_areas are bound to
+            st.session_state.struggling_words_input = data.get("struggles", "")
+            st.session_state.student_interests_input = data.get("interests", "")
+        else:
+            # Clear for new student
+            st.session_state.struggling_words_input = ""
+            st.session_state.student_interests_input = ""
+        st.session_state.last_loaded_student = student_name
+
     st.divider()
     
     # STUDENT STRUGGLING WORDS INPUT
     st.write("**📝 Words Student Has Encountered & Struggled To Spell**")
     struggling_words_input = st.text_area(
-        "Enter words student has misspelled before",
-        value=st.session_state.get("struggling_words", ""),
-        height=80,
-        placeholder="e.g., slep, stik, wif (comma-separated or one per line)",
+        "Enter misspellings in 'Correct:Attempt' format",
+        height=120,
+        placeholder="e.g., ship:sip, sled:sed, stick:stik (comma-separated or one per line)",
         key="struggling_words_input"
     )
     
     st.divider()
+    # STUDENT INTERESTS
+    st.write("**🌟 Student Interests & Background**")
+    student_interests_input = st.text_area(
+        "What does the student like? (e.g., Dinosaurs, Space, Minecraft)",
+        placeholder="e.g., Loves space and astronauts",
+        key="student_interests_input"
+    )
+    
+    # SAVE STUDENT DATA
+    if st.button("💾 Save Student Data"):
+        if student_name:
+            st.session_state.students[student_name] = {
+                "struggles": struggling_words_input,
+                "interests": student_interests_input
+            }
+            st.success(f"Saved data for {student_name}!")
+        else:
+            st.error("Please enter a student name first.")
+
+    st.divider()
     
     # WORD BANK TOOLS
     st.write("**🛠️ Word Bank Tools**")
+
+    # G-GROUP LEGEND (Moved to expander at bottom)
+    with st.expander("📚 Diagnostic Group Description"):
+        st.caption("G0 Phonemic Awareness")
+        st.caption("G1 Basic CVC Mapping")
+        st.caption("G2 Digraphs")
+        st.caption("G3 Silent E")
+        st.caption("G4 Vowel Teams")
+        st.caption("G5 R-Controlled")
+        st.caption("G6 Clusters (Blends)")
+        st.caption("G7 Multisyllabic")
+        st.caption("G8 Reduction & Morphology")
+
 
 if st.button("🧠 AI-Generate Personalized Practice Lists"):
     with st.spinner("Generating personalized practice lists with AI..."):
@@ -137,6 +190,8 @@ if st.button("🧠 AI-Generate Personalized Practice Lists"):
                         target_group=g_key,
                         teacher_notes=teacher_notes,
                         struggling_words=combined_struggling,
+                        student_interests=st.session_state.get("student_interests_input", ""),
+                        unit_description=st.session_state.get("unit_description", ""),
                         custom_words_input=custom_input if custom_input.strip() else None
                     )
                 except Exception as e:
