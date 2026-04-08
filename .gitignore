@@ -25,3 +25,5 @@ __pycache__/\
 __pycache__/
 .venv/
 .DS_Store
+student_map.json
+spelling_coach.db
