@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew, generate_personalized_practice_words
-from database_manager import init_db, get_all_latest_results
+from database_manager import init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings, save_teacher_settings, import_from_csv
 import random
 import os
 import csv
@@ -32,6 +32,67 @@ def save_settings(settings):
     except Exception as e:
         st.error(f"Error saving settings: {e}")
 
+def get_or_create_student_id(teacher_id, name):
+    """Returns the ID for a name, creating one if it doesn't exist in DB."""
+    from database_manager import get_student_id_by_name, save_student_identity
+    
+    existing_id = get_student_id_by_name(teacher_id, name)
+    if existing_id:
+        return existing_id
+            
+    new_id = f"STU_{random.randint(1000, 9999)}"
+    save_student_identity(teacher_id, new_id, name)
+    return new_id
+
+def migrate_legacy_profiles():
+    """
+    Scan students.csv for real names instead of IDs.
+    Migrate them into the SQL student_identity table.
+    """
+    if not os.path.exists(PROFILES_CSV):
+        return
+
+    updated = False
+    profiles_data = []
+    teacher_id = st.session_state.get("user_email", "default_teacher")
+    
+    try:
+        with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            id_col = "Student ID" if "Student ID" in fieldnames else "Student Name"
+            
+            for row in reader:
+                val = row.get(id_col, "")
+                if val and not val.startswith("STU_"):
+                    new_id = get_or_create_student_id(teacher_id, val)
+                    row[id_col] = new_id
+                    updated = True
+                profiles_data.append(row)
+                
+        if updated:
+            new_fieldnames = ["Student ID", "Struggles", "Mastered Words", "Target_Group"]
+            with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=new_fieldnames)
+                writer.writeheader()
+                for row in profiles_data:
+                    updated_row = {
+                        "Student ID": row.get("Student ID") or row.get("Student Name"),
+                        "Struggles": row.get("Sruggles", ""),
+                        "Mastered Words": row.get("Mastered Words", ""),
+                        "Target_Group": row.get("Target_Group", "g1")
+                    }
+                    writer.writerow(updated_row)
+            st.toast("🎓 Legacy student profiles migrated to Cloud-hosted Map.")
+            
+    except Exception as e:
+        st.error(f"Migration error: {e}")
+
+def get_name_for_id(teacher_id, student_id):
+    """Returns the real name for a given ID from the DB."""
+    from database_manager import get_student_name
+    return get_student_name(teacher_id, student_id)
+
 def load_profiles():
     """Load student profiles from CSV into a dictionary."""
     profiles = {}
@@ -40,9 +101,9 @@ def load_profiles():
             with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    name = row.get("Student Name")
-                    if name:
-                        profiles[name] = {
+                    sid = row.get("Student ID")
+                    if sid:
+                        profiles[sid] = {
                             "struggles": row.get("Struggles", ""),
                             "mastered": row.get("Mastered Words", ""),
                             "target_group": row.get("Target_Group", "g1")
@@ -51,18 +112,18 @@ def load_profiles():
             st.error(f"Error loading profiles: {e}")
     return profiles
 
-def save_profile(name, struggles, mastered, target_group):
+def save_profile(student_id, struggles, mastered, target_group):
     """Save/Update a student profile in the CSV."""
     profiles = load_profiles()
-    profiles[name] = {"struggles": struggles, "mastered": mastered, "target_group": target_group}
+    profiles[student_id] = {"struggles": struggles, "mastered": mastered, "target_group": target_group}
     
     try:
         with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=["Student Name", "Struggles", "Mastered Words", "Target_Group"])
+            writer = csv.DictWriter(f, fieldnames=["Student ID", "Struggles", "Mastered Words", "Target_Group"])
             writer.writeheader()
-            for student, data in profiles.items():
+            for sid, data in profiles.items():
                 writer.writerow({
-                    "Student Name": student,
+                    "Student ID": sid,
                     "Struggles": data["struggles"],
                     "Mastered Words": data["mastered"],
                     "Target_Group": data["target_group"]
@@ -125,7 +186,21 @@ init_db()
 st.set_page_config(page_title="WTW Coach", page_icon="🍎")
 st.title("🍎 WTW Digital Spelling Coach")
 
-# --- 1. INITIALIZE ALL MEMORY ---
+# --- INITIALIZE ALL MEMORY ---
+# Authentication context (for pilot)
+# In a production app, this would be handled by a proper auth provider
+if "user_email" not in st.session_state:
+    st.session_state.user_email = "admin@example.com" # Default for dev
+
+# Run ownership assignment helper
+from database_manager import assign_unowned_students
+num_assigned = assign_unowned_students(st.session_state.user_email)
+if num_assigned > 0:
+    st.toast(f"🛠️ Assigned {num_assigned} unowned students to your profile.")
+
+# Run migration and setup
+migrate_legacy_profiles()
+
 if "raw_transcription" not in st.session_state:
     st.session_state.raw_transcription = ""
 if "analysis_result" not in st.session_state:
@@ -146,39 +221,90 @@ if "unit_description" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
+    st.header("👤 User Account")
+    
+    # LOGIN / SWITCH USER LOGIC
+    current_user = st.session_state.get("user_email", "")
+    new_user = st.text_input("Email Address", value=current_user, placeholder="Enter email to login...")
+    
+    if st.button("🔑 Login / Switch User"):
+        if new_user:
+            st.session_state.user_email = new_user
+            st.rerun()
+        else:
+            st.error("Please enter an email.")
+    
+    st.write(f"Logged in as: **{st.session_state.user_email}**")
+    
+    # ADMIN CHECK
+    is_admin = st.session_state.user_email == "komododundee@gmail.com"
+    if is_admin:
+        st.success("🌟 Admin Access Granted")
+    
+    # STATUS INDICATORS
+    st.divider()
+    try:
+        from database_manager import init_db
+        init_db()
+        st.write("🟢 Database Connection: OK")
+    except Exception as e:
+        st.write(f"🔴 Database Connection: Error ({e})")
+    
+    role = "Admin" if is_admin else "Teacher"
+    st.write(f"👤 User Role: {role}")
+
+    st.divider()
     st.header("📋 Class Settings")
     
     # GLOBAL UNIT DESCRIPTION
+    from database_manager import get_teacher_settings, save_teacher_settings
+    current_unit_desc = get_teacher_settings(st.session_state.user_email)
+    
+    if not current_unit_desc:
+        st.warning("⚠️ Please enter your Unit Description")
+    
     unit_desc = st.text_area(
         "🌍 Global Unit Description", 
-        value=st.session_state.unit_description,
+        value=current_unit_desc,
         placeholder="e.g., This unit focuses on long-a vowel teams and silent-e in the context of nature and animals.",
         key="unit_description_input"
     )
     
-    # Save globally whenever this changes
-    if unit_desc != st.session_state.unit_description:
+    if unit_desc != current_unit_desc:
+        save_teacher_settings(st.session_state.user_email, unit_desc)
         st.session_state.unit_description = unit_desc
-        save_settings({"unit_description": unit_desc})
+        st.toast("Unit description saved!")
 
     st.divider()
     
     # STUDENT SELECTION
-    existing_students = list(st.session_state.students.keys())
-    selection = st.selectbox("📁 Load Student Profile", options=["None / New Student"] + existing_students)
+    teacher_id = st.session_state.get("user_email", "default_teacher")
+    st.sidebar.write(f"Logged in as: {teacher_id}")
+    from database_manager import get_teacher_students
+    
+    student_map = get_teacher_students(teacher_id) # {student_id: real_name}
+    id_to_name = student_map 
+    name_to_id = {name: sid for sid, name in student_map.items()}
+    
+    existing_names = list(name_to_id.keys())
+    selection = st.selectbox("📁 Load Student Profile", options=["None / New Student"] + existing_names)
     
     if selection != "None / New Student":
         student_name = selection
+        student_id = name_to_id[selection]
     else:
         student_name = st.text_input("Student Name (required)", key="name_input")
+        student_id = get_or_create_student_id(teacher_id, student_name) if student_name else None
 
     # Logic to Load Student Data when name is changed
     if "last_loaded_student" not in st.session_state:
         st.session_state.last_loaded_student = ""
 
     if student_name and student_name != st.session_state.last_loaded_student:
-        if student_name in st.session_state.students:
-            data = st.session_state.students[student_name]
+        # Use ID for profile lookup
+        profiles = st.session_state.students
+        if student_id and student_id in profiles:
+            data = profiles[student_id]
             # Force update the session state keys that the text_areas are bound to
             st.session_state.struggling_words_input = data.get("struggles", "")
             st.session_state.mastered_words_input = data.get("mastered", "")
@@ -191,6 +317,7 @@ with st.sidebar:
         st.session_state.last_loaded_student = student_name
 
     st.divider()
+    st.caption("🔒 Anonymization Active: Real names are stored locally only.")
     
     st.write("**🎯 Target Group**")
     target_group_input = st.selectbox(
@@ -202,9 +329,9 @@ with st.sidebar:
     st.divider()
     
     # STUDENT STRUGGLING WORDS INPUT
-    st.write("**📝 Words Student Has Encountered & Struggled To Spell**")
+    st.write("**📝 Experienced Errors (Long-term Struggles)**")
     struggling_words_input = st.text_area(
-        "Enter misspellings in 'Correct:Attempt' format",
+        "Enter words student has struggled with across multiple tests ('Correct:Attempt')",
         height=120,
         placeholder="e.g., ship:sip, sled:sed, stick:stik (comma-separated or one per line)",
         key="struggling_words_input"
@@ -222,14 +349,14 @@ with st.sidebar:
     # SAVE STUDENT DATA
     if st.button("💾 Save Student Data"):
         if student_name:
-            # Update session state
-            st.session_state.students[student_name] = {
+            # Use ID instead of Name
+            st.session_state.students[student_id] = {
                 "struggles": struggling_words_input,
                 "mastered": mastered_words_input,
                 "target_group": target_group_input
             }
-            # Persist to CSV
-            save_profile(student_name, struggling_words_input, mastered_words_input, target_group_input)
+            # Persist to CSV using ID
+            save_profile(student_id, struggling_words_input, mastered_words_input, target_group_input)
             st.success(f"Saved data for {student_name}!")
             st.rerun() # Refresh dropdown and state
         else:
@@ -290,20 +417,23 @@ if st.button("🧠 AI-Generate Personalized Practice Lists"):
                     base_words = [line.strip() for line in f.readlines() if line.strip()]
             
             # Create a personalized slip for each student in this group
-            for student_name in students:
+            for student_id in students:
+                # Resolve ID to Real Name for UI display and internal mapping
+                display_name = get_name_for_id(student_id)
+                
                 # Fetch student's teacher notes and struggling words from database
                 from database_manager import get_latest_teacher_notes, get_struggling_words
-                teacher_notes = get_latest_teacher_notes(student_name)
-                db_struggling_words = get_struggling_words(student_name)
+                teacher_notes = get_latest_teacher_notes(student_id)
+                db_struggling_words = get_struggling_words(student_id)
                 
                 # Combine: custom input takes priority, then DB records
                 custom_input = st.session_state.get("struggling_words_input", "")
                 combined_struggling = custom_input if custom_input.strip() else db_struggling_words
                 
-                # Generate personalized words using AI
+                # Generate personalized words using AI (pass ID to maintain privacy)
                 try:
                     personalized_words = generate_personalized_practice_words(
-                        student_name=student_name,
+                        student_name=student_id,
                         target_group=g_key,
                         teacher_notes=teacher_notes,
                         struggling_words=combined_struggling,
@@ -312,12 +442,12 @@ if st.button("🧠 AI-Generate Personalized Practice Lists"):
                         custom_words_input=custom_input if custom_input.strip() else None
                     )
                 except Exception as e:
-                    st.warning(f"AI generation failed for {student_name}, using fallback: {e}")
+                    st.warning(f"AI generation failed for {display_name}, using fallback: {e}")
                     # Fallback to random selection from word bank
                     personalized_words = random.sample(base_words, min(10, len(base_words))) if base_words else ["word" + str(i) for i in range(1, 11)]
                 
                 student_slips.append({
-                    "student_name": student_name,
+                    "student_name": display_name,
                     "group_title": group_title,
                     "words": personalized_words
                 })
@@ -450,8 +580,8 @@ if uploaded_file:
             with st.spinner(f"Analyzing {student_name}..."):
                 # Save the edited text to session state so it persists after analysis
                 st.session_state.edited_transcription = edited_text
-                # We use 'edited_text' here to match the text_area variable above
-                result = run_scoring_crew(student_name, edited_text)
+                # Pass the student_id to the AI to keep it anonymous
+                result = run_scoring_crew(student_id, edited_text)
                 
                 if result is None:
                     st.error("The AI returned nothing. Check your internet or API key.")
@@ -462,7 +592,7 @@ if uploaded_file:
     if st.session_state.analysis_result:
         data = st.session_state.analysis_result 
 
-        st.subheader(f"📝 Diagnostic for {student_name}") # Pulled directly from sidebar to stop crashes
+        st.subheader(f"📝 Diagnostic for {student_name}") # Keep the real name for the teacher's view
         
         # 1. ATTEMPT TO READ STRUCTURED DATA OR PARSE RAW JSON
         import json
@@ -589,7 +719,7 @@ if uploaded_file:
             class SaveObject:
                 pass
             save_obj = SaveObject()
-            save_obj.student_name = student_name
+            save_obj.student_id = student_id
             save_obj.suggested_next_groups = cleaned_targets # Uses our newly cleaned list!
             save_obj.teacher_notes = notes
             save_obj.g0_phonemic_awareness = g_scores["g0"]
@@ -613,22 +743,65 @@ if uploaded_file:
 # --- STEP 2: CLASS ANALYSIS ---
 st.header("📊 Class Overview & Grouping")
 
-from database_manager import get_all_latest_results, generate_class_groups
+from database_manager import get_all_latest_results, generate_class_groups, get_orphaned_students, assign_student_to_teacher, get_all_teachers
 
-data = get_all_latest_results()
+# Permissions check
+teacher_id = st.session_state.get("user_email", "default_teacher")
+is_admin = teacher_id == "komododundee@gmail.com"
+
+if is_admin:
+    st.subheader("🏫 School-Wide Research Dashboard")
+    
+    # --- ADMIN ALLOCATION SECTION ---
+    st.markdown("### 🛠️ Admin Student Allocation")
+    orphans = get_orphaned_students()
+    
+    if orphans:
+        # Display orphaned records
+        orphan_df = pd.DataFrame(orphans, columns=["Student ID", "Real Name"])
+        st.table(orphan_df)
+        
+        # Allocation Form
+        with st.form("allocation_form"):
+            st.write("Assign Student to Teacher")
+            col1, col2 = st.columns(2)
+            with col1:
+                student_to_assign = st.selectbox("Select Student", options=orphans, format_func=lambda x: f"{x[1]} ({x[0]})")
+            with col2:
+                all_teachers = get_all_teachers()
+                teacher_to_assign = st.selectbox("Select Teacher", options=all_teachers)
+            
+            if st.form_submit_button("Assign and Update"):
+                assign_student_to_teacher(student_to_assign[0], teacher_to_assign)
+                st.success(f"Student {student_to_assign[1]} assigned to {teacher_to_assign}!")
+                st.rerun()
+    else:
+        st.info("No orphaned students currently need assignment.")
+    
+    st.markdown("---")
+    
+    # Import Legacy Data Button
+    if st.button("🚀 Import Legacy CSV Data"):
+        from database_manager import import_from_csv
+        import_from_csv()
+        st.success("CSV Data Import attempted. Check logs for details.")
+        st.rerun()
+    
+    # Standard Admin View
+    data = get_all_latest_results(admin=True)
+else:
+    st.subheader("🎯 My Class Overview")
+    data = get_all_latest_results(teacher_id=teacher_id, admin=False)
 
 if not data:
     st.info("No student data found. Save an assessment first!")
 else:
     # 1. Draw the Master Table
-    df = pd.DataFrame(data, columns=[
-        "ID", "Student", "Date", "Raw Text", 
-        "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", 
-        "Suggested", "Notes", "Refined Notes"
-    ])
-    
-    # Show the table but hide the database IDs and raw transcriptions for a cleaner look
-    st.dataframe(df.drop(columns=["ID", "Raw Text", "Notes"]))
+    df = pd.DataFrame(data)
+    cols_to_show = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17]
+    display_df = df.iloc[:, cols_to_show].copy()
+    display_df.columns = ["Student ID", "Date", "Created At", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "Suggested", "Refined Notes", "Struggling Words"]
+    st.dataframe(display_df, use_container_width=True)
     
     st.markdown("---")
     
@@ -642,21 +815,19 @@ else:
     teaching_groups = generate_groups_from_csv()
     
     if not teaching_groups:
-        st.warning("No teaching groups could be formed. Ensure students have a Target Group saved in their profiles.")
+        st.warning("No teaching groups could be formed.")
     else:
-        # Let's display them in a dynamic grid of columns
         cols = st.columns(3)
         col_idx = 0
         
         for group_name, students in teaching_groups.items():
             with cols[col_idx]:
-                # A nice clean card for each group
                 st.markdown(f"### {group_name}")
-                for student in students:
-                    st.markdown(f"- **{student}**")
-                st.write("") # Add spacing
-            
-            # Cycle through the 3 columns
+                for student_id in students:
+                    if is_admin or student_id in get_teacher_students(teacher_id):
+                        display_name = get_name_for_id(teacher_id, student_id)
+                        st.markdown(f"- **{display_name}**")
+                st.write("")
             col_idx = (col_idx + 1) % 3
 
 # --- PRACTICE LISTS DISPLAY ---
