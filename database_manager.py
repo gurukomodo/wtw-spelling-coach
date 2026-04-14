@@ -86,6 +86,112 @@ def repair_schema(cursor):
         cursor.execute("ALTER TABLE assessments ADD COLUMN teacher_id TEXT")
         print("Schema Repair: Added teacher_id column to assessments.")
 
+# ============================================================
+# DATABASE SANITIZATION & MAINTENANCE
+# ============================================================
+
+def sync_identity_from_assessments():
+    """
+    CRITICAL: Syncs student_identity table from assessments table.
+    Any student in assessments WITHOUT an identity record gets one created.
+    Uses student_id as the anchor, with student_id as the display name.
+    Returns count of new identity records created.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Find students in assessments that don't exist in student_identity
+    cursor.execute('''
+        SELECT DISTINCT a.student_id
+        FROM assessments a
+        LEFT JOIN student_identity si ON a.student_id = si.student_id
+        WHERE si.student_id IS NULL AND a.student_id IS NOT NULL AND a.student_id != ''
+    ''')
+    missing_students = [row[0] for row in cursor.fetchall()]
+    
+    # Insert missing students as ORPHANS (teacher_id = NULL)
+    created_count = 0
+    for student_id in missing_students:
+        try:
+            cursor.execute('''
+                INSERT INTO student_identity (teacher_id, student_id, real_name)
+                VALUES (NULL, ?, ?)
+            ''', (student_id, student_id))  # Use student_id as real_name too
+            created_count += 1
+        except Exception as e:
+            print(f"Error creating identity for {student_id}: {e}")
+    
+    conn.commit()
+    conn.close()
+    return {"created": created_count, "total_missing": len(missing_students)}
+
+def clear_all_data():
+    """
+    DELETES ALL DATA from both tables.
+    Use with extreme caution - this is for clean re-import only.
+    Returns confirmation dict.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Count before deletion
+    cursor.execute("SELECT COUNT(*) FROM assessments")
+    assessments_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM student_identity")
+    identity_count = cursor.fetchone()[0]
+    
+    # Delete all data
+    cursor.execute("DELETE FROM assessments")
+    cursor.execute("DELETE FROM student_identity")
+    
+    conn.commit()
+    conn.close()
+    
+    return {
+        "assessments_deleted": assessments_count,
+        "identity_deleted": identity_count,
+        "status": "complete"
+    }
+
+def fix_all_teacher_ids():
+    """
+    Ensures teacher_id consistency:
+    - Copies teacher_id from student_identity to ALL assessment rows for each student
+    - Returns stats about what was updated
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Get all students with their teacher_ids from identity
+    cursor.execute('''
+        SELECT student_id, teacher_id FROM student_identity
+        WHERE teacher_id IS NOT NULL AND teacher_id != ''
+    ''')
+    student_teachers = cursor.fetchall()  # [(student_id, teacher_id), ...]
+    
+    updated_count = 0
+    for student_id, teacher_id in student_teachers:
+        # Update ALL assessment rows for this student
+        cursor.execute('''
+            UPDATE assessments
+            SET teacher_id = ?
+            WHERE student_id = ?
+        ''', (teacher_id, student_id))
+        updated_count += cursor.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    return {
+        "students_synced": len(student_teachers),
+        "total_assessment_rows_updated": updated_count
+    }
+
+# ============================================================
+# TEACHER SETTINGS
+# ============================================================
+
 def save_teacher_settings(teacher_id, description):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -103,6 +209,10 @@ def get_teacher_settings(teacher_id):
     result = cursor.fetchone()
     conn.close()
     return result[0] if result and result[0] else ""
+
+# ============================================================
+# STUDENT IDENTITY
+# ============================================================
 
 def save_student_identity(teacher_id, student_id, real_name):
     conn = sqlite3.connect(DB_PATH)
@@ -149,12 +259,12 @@ def get_teacher_students(teacher_id):
     return {row[0]: row[1] for row in results}
 
 def count_unowned_students():
-    """Returns count of students in identity table with no teacher or admin email."""
+    """Returns count of students in identity table with no teacher."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT COUNT(*) FROM student_identity 
-        WHERE teacher_id IS NULL OR teacher_id = '' OR teacher_id = 'admin@example.com'
+        WHERE teacher_id IS NULL OR teacher_id = ''
     ''')
     count = cursor.fetchone()[0]
     conn.close()
@@ -172,21 +282,24 @@ def assign_unowned_students(teacher_id):
     cursor.execute('''
         UPDATE student_identity 
         SET teacher_id = ? 
-        WHERE teacher_id IS NULL OR teacher_id = '' OR teacher_id = 'admin@example.com'
+        WHERE teacher_id IS NULL OR teacher_id = ''
     ''', (teacher_id,))
     
-    # 2. Update assessments records
+    # 2. Update ALL assessments records for these students
     cursor.execute('''
         UPDATE assessments 
         SET teacher_id = ? 
         WHERE student_id IN (SELECT student_id FROM student_identity WHERE teacher_id = ?)
-        AND (teacher_id IS NULL OR teacher_id = '' OR teacher_id = 'admin@example.com')
     ''', (teacher_id, teacher_id))
     
     updated_count = cursor.rowcount
     conn.commit()
     conn.close()
     return updated_count
+
+# ============================================================
+# TEACHER LOOKUPS
+# ============================================================
 
 def get_all_teachers():
     """Returns a list of all registered teacher IDs from the identity map and settings."""
@@ -204,51 +317,181 @@ def get_all_teachers():
     conn.close()
     return [row[0] for row in results]
 
+# ============================================================
+# ORPHANED STUDENTS
+# ============================================================
+
 def get_orphaned_students():
-    """Returns a list of students who have no assigned teacher (NULL, empty, or 'orphaned')."""
+    """
+    Returns orphaned students - those in student_identity with NULL/empty teacher_id.
+    FIRST runs sync to ensure all assessment students have identity records.
+    Returns list of tuples: (student_id, real_name)
+    """
+    # First, sync any missing students from assessments
+    sync_identity_from_assessments()
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # Get orphaned from student_identity ONLY (the source of truth for assignment)
     cursor.execute('''
-        SELECT student_id, real_name 
+        SELECT DISTINCT student_id, real_name, 'identity' as source
         FROM student_identity 
         WHERE teacher_id IS NULL OR teacher_id = '' OR teacher_id = 'orphaned' OR teacher_id = 'admin@example.com'
+        ORDER BY real_name
     ''')
-    results = cursor.fetchall()
+    orphans = cursor.fetchall()
+    
     conn.close()
-    return results
+    return orphans
 
-def assign_student_to_teacher(student_id, teacher_id):
-    """Assigns a student to a specific teacher in both identity and assessments tables."""
+def get_orphaned_assessments_count():
+    """Returns count of orphaned assessment records."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT COUNT(*) FROM assessments 
+        WHERE teacher_id IS NULL OR teacher_id = '' OR teacher_id = 'orphaned' OR teacher_id = 'admin@example.com'
+    ''')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+# ============================================================
+# ASSIGNMENT FUNCTIONS
+# ============================================================
+
+def bulk_assign_students(student_ids, target_teacher_email):
+    """
+    Assigns a list of specific students to a target teacher.
+    Updates BOTH student_identity AND ALL matching assessment rows.
+    
+    Args:
+        student_ids: List of student_id strings to assign
+        target_teacher_email: The teacher_id (email) to assign them to
+    
+    Returns:
+        Dict with counts of updated rows
+    """
+    if not student_ids:
+        return {"identity_updated": 0, "assessments_updated": 0}
+    
+    placeholders = ','.join(['?' for _ in student_ids])
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # 1. Update identity map
-    cursor.execute('''
-        UPDATE student_identity 
-        SET teacher_id = ? 
-        WHERE student_id = ?
-    ''', (teacher_id, student_id))
+    # 1. Update student_identity - INSERT OR REPLACE to ensure record exists
+    for sid in student_ids:
+        cursor.execute('''
+            INSERT OR REPLACE INTO student_identity (teacher_id, student_id, real_name)
+            VALUES (?, ?, COALESCE((SELECT real_name FROM student_identity WHERE student_id = ?), ?))
+        ''', (target_teacher_email, sid, sid, sid))
+    identity_updated = len(student_ids)
     
-    # 2. Update assessments records
-    cursor.execute('''
+    # 2. Update ALL assessment rows for these students (no WHERE on teacher_id)
+    cursor.execute(f'''
         UPDATE assessments 
         SET teacher_id = ? 
-        WHERE student_id = ?
-    ''', (teacher_id, student_id))
+        WHERE student_id IN ({placeholders})
+    ''', [target_teacher_email] + student_ids)
+    assessments_updated = cursor.rowcount
     
     conn.commit()
     conn.close()
+    
+    return {
+        "identity_updated": identity_updated,
+        "assessments_updated": assessments_updated
+    }
+
+def bulk_assign_orphans_to_teacher(target_teacher_id):
+    """
+    Assigns ALL orphaned students to the specified teacher.
+    Updates BOTH student_identity AND ALL assessment rows.
+    """
+    # Get orphans first
+    orphans = get_orphaned_students()
+    if not orphans:
+        return {"students_assigned": 0, "identity_rows_updated": 0, "assessment_rows_updated": 0}
+    
+    student_ids = [o[0] for o in orphans]
+    return bulk_assign_students(student_ids, target_teacher_id)
+
+def assign_student_to_teacher(student_id, teacher_id):
+    """
+    Assigns a single student to a teacher.
+    Updates BOTH student_identity AND ALL assessment rows for that student.
+    """
+    return bulk_assign_students([student_id], teacher_id)
+
+# ============================================================
+# DEBUG & RAW DATA
+# ============================================================
+
+def get_raw_assessments(limit=5):
+    """Returns the first N rows from assessments table, ignoring ownership. For admin debugging."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(f'''
+        SELECT * FROM assessments ORDER BY id LIMIT {limit}
+    ''')
+    results = cursor.fetchall()
+    
+    # Get column names
+    cursor.execute("PRAGMA table_info(assessments)")
+    columns = [col[1] for col in cursor.fetchall()]
+    conn.close()
+    return columns, results
+
+def get_database_stats():
+    """Returns overall database statistics for admin dashboard."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    stats = {}
+    
+    # Total assessments
+    cursor.execute("SELECT COUNT(*) FROM assessments")
+    stats["total_assessments"] = cursor.fetchone()[0]
+    
+    # Total students in identity
+    cursor.execute("SELECT COUNT(*) FROM student_identity")
+    stats["total_students"] = cursor.fetchone()[0]
+    
+    # Orphaned students
+    cursor.execute("SELECT COUNT(*) FROM student_identity WHERE teacher_id IS NULL OR teacher_id = ''")
+    stats["orphaned_students"] = cursor.fetchone()[0]
+    
+    # Orphaned assessments
+    cursor.execute("SELECT COUNT(*) FROM assessments WHERE teacher_id IS NULL OR teacher_id = ''")
+    stats["orphaned_assessments"] = cursor.fetchone()[0]
+    
+    # Unique teachers
+    cursor.execute("SELECT COUNT(DISTINCT teacher_id) FROM student_identity WHERE teacher_id IS NOT NULL AND teacher_id != ''")
+    stats["total_teachers"] = cursor.fetchone()[0]
+    
+    conn.close()
+    return stats
+
+# ============================================================
+# CSV IMPORT
+# ============================================================
 
 def import_from_csv(teacher_email=None):
     """
     Reads students.csv and assessments.csv and imports them into the SQL database.
-    Sets teacher_id to 'orphaned' for all imported legacy data.
+    Sets teacher_id = NULL for ALL imported legacy data so they appear as 'orphaned'.
+    Admin can then assign them to teachers.
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
+    ORPHAN_TEACHER = None  # Explicitly NULL for orphan status
+    
     # 1. Import Students from students.csv
     students_csv = "students.csv"
+    imported_students = 0
     if os.path.exists(students_csv):
         try:
             with open(students_csv, mode='r', encoding='utf-8') as f:
@@ -257,18 +500,21 @@ def import_from_csv(teacher_email=None):
                     sid = row.get("Student ID") or row.get("Student Name")
                     name = row.get("Student Name") or sid
                     if sid:
-                        # Deduplication: check if student exists
+                        # Check if student already exists
                         cursor.execute('SELECT 1 FROM student_identity WHERE student_id = ?', (sid,))
                         if not cursor.fetchone():
                             cursor.execute('''
                                 INSERT INTO student_identity (teacher_id, student_id, real_name) 
                                 VALUES (?, ?, ?)
-                            ''', ('orphaned', sid, name))
+                            ''', (ORPHAN_TEACHER, sid, name))
+                            imported_students += 1
+            conn.commit()
         except Exception as e:
             print(f"Error importing students.csv: {e}")
 
-    # 2. Import Assessments from assessments.csv
+    # 2. Import Assessments from assessments.csv (ALWAYS INSERT - never check for duplicates)
     assessments_csv = "assessments.csv"
+    imported_assessments = 0
     if os.path.exists(assessments_csv):
         try:
             with open(assessments_csv, mode='r', encoding='utf-8') as f:
@@ -277,37 +523,107 @@ def import_from_csv(teacher_email=None):
                     sid = row.get("student_id") or row.get("Student ID")
                     if not sid: continue
                     
-                    test_date = row.get("test_date")
-                    cursor.execute('''
-                        SELECT 1 FROM assessments 
-                        WHERE student_id = ? AND test_date = ?
-                    ''', (sid, test_date))
+                    # SAFE ENTRY: Always insert new row, never overwrite
+                    test_date = row.get("test_date") or datetime.now().strftime("%Y-%m-%d")
                     
-                    if not cursor.fetchone():
-                        cursor.execute('''
-                            INSERT INTO assessments (
-                                student_id, teacher_id, test_date, created_at, raw_transcription,
-                                g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
-                                g4_vowel_teams, g5_r_controlled, g6_clusters, 
-                                g7_multisyllabic, g8_reduction, suggested_next, 
-                                teacher_notes, teacher_refined_notes, struggling_words
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            sid, 'orphaned', test_date, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            row.get("raw_transcription", ""),
-                            row.get("g0", 0), row.get("g1", 0), row.get("g2", 0),
-                            row.get("g3", 0), row.get("g4", 0), row.get("g5", 0),
-                            row.get("g6", 0), row.get("g7", 0), row.get("g8", 0),
-                            row.get("suggested_next", ""), row.get("teacher_notes", ""),
-                            row.get("teacher_refined_notes", ""), row.get("struggling_words", "")
-                        ))
+                    cursor.execute('''
+                        INSERT INTO assessments (
+                            student_id, teacher_id, test_date, created_at, raw_transcription,
+                            g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
+                            g4_vowel_teams, g5_r_controlled, g6_clusters, 
+                            g7_multisyllabic, g8_reduction, suggested_next, 
+                            teacher_notes, teacher_refined_notes, struggling_words
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        sid, ORPHAN_TEACHER, test_date, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        row.get("raw_transcription", ""),
+                        row.get("g0", 0), row.get("g1", 0), row.get("g2", 0),
+                        row.get("g3", 0), row.get("g4", 0), row.get("g5", 0),
+                        row.get("g6", 0), row.get("g7", 0), row.get("g8", 0),
+                        row.get("suggested_next", ""), row.get("teacher_notes", ""),
+                        row.get("teacher_refined_notes", ""), row.get("struggling_words", "")
+                    ))
+                    imported_assessments += 1
+            conn.commit()
         except Exception as e:
             print(f"Error importing assessments.csv: {e}")
 
-    conn.commit()
     conn.close()
+    
+    # After import, sync identity from assessments
+    sync_identity_from_assessments()
+    
+    return {"students": imported_students, "assessments": imported_assessments}
+
+# ============================================================
+# ASSESSMENT HISTORY
+# ============================================================
+
+def get_student_history(student_id, teacher_id=None, admin=False):
+    """
+    Fetches all historical assessments for a student.
+    Teacher filtering: Teachers only see their own students' history.
+    Admin can see all.
+    Returns list of tuples ordered by created_at DESC.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Verify ownership if not admin
+    if not admin and teacher_id:
+        cursor.execute('''
+            SELECT 1 FROM student_identity 
+            WHERE student_id = ? AND teacher_id = ?
+        ''', (student_id, teacher_id))
+        if not cursor.fetchone():
+            conn.close()
+            return []  # Not authorized
+    
+    query = '''
+        SELECT 
+            id, student_id, teacher_id, test_date, created_at,
+            g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, 
+            g4_vowel_teams, g5_r_controlled, g6_clusters, 
+            g7_multisyllabic, g8_reduction, suggested_next, 
+            teacher_notes, teacher_refined_notes, struggling_words
+        FROM assessments 
+        WHERE student_id = ?
+        ORDER BY created_at DESC
+    '''
+    
+    cursor.execute(query, (student_id,))
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+def get_mastered_words_from_raw(raw_text, word_list=None):
+    """
+    Extracts mastered words from the raw transcription.
+    Words are considered mastered if spelled correctly.
+    """
+    if not raw_text:
+        return ""
+    
+    mastered = []
+    lines = raw_text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if ':' in line:
+            parts = line.split(':')
+            if len(parts) >= 2:
+                correct = parts[0].strip()
+                attempt = parts[1].strip()
+                if correct.lower() == attempt.lower():
+                    mastered.append(correct)
+    
+    return ", ".join(mastered) if mastered else ""
 
 def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None):
+    """
+    Saves an assessment. Always creates a NEW row to preserve history.
+    Never overwrites existing entries.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -323,18 +639,19 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
     
     suggested_str = ", ".join(data.suggested_next_groups) if data.suggested_next_groups else ""
     
-    # Use the teacher's ID associated with the student for the record
-    # Since 'data' is a SaveObject from app.py, we assume we pass the correct student_id
-    # To get the current teacher_id, we query identity map
+    # Get the teacher's ID associated with the student
     cursor.execute('SELECT teacher_id FROM student_identity WHERE student_id = ?', (data.student_id,))
     owner_result = cursor.fetchone()
-    current_teacher_id = owner_result[0] if owner_result else "unknown"
+    current_teacher_id = owner_result[0] if owner_result else None
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today_date = datetime.now().strftime("%Y-%m-%d")
+    
     values = (
         data.student_id, 
         current_teacher_id,
-        datetime.now().strftime("%Y-%m-%d %H:%M"), 
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+        today_date, 
+        now, 
         raw_text,
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
@@ -345,6 +662,11 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
     cursor.execute(query, values)
     conn.commit()
     conn.close()
+    return True
+
+# ============================================================
+# RESULTS & GROUPS
+# ============================================================
 
 def get_all_latest_results(teacher_id=None, admin=False):
     """
@@ -417,8 +739,6 @@ def get_struggling_words(student_id):
 
 def generate_class_groups():
     """Reads all latest student results and organizes students by target groups."""
-    # We call without teacher_id here because it's a general CSV load helper in app.py
-    # but if called from app.py and we want filtered groups, you can pass it.
     results = get_all_latest_results(admin=True)
     
     if not results:
@@ -440,8 +760,6 @@ def generate_class_groups():
     groups["Review Needed"] = []
     
     for row in results:
-        # Row is assessments.* + teacher_id
-        # Assessments: 0:id, 1:student_id... 14:suggested_next
         student_id = row[1] 
         suggested_string = row[14] 
         

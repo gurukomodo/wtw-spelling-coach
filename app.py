@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew, generate_personalized_practice_words
-from database_manager import init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings, save_teacher_settings, import_from_csv
+from database_manager import init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings, save_teacher_settings, import_from_csv, get_student_history, get_mastered_words_from_raw
 import random
 import os
 import csv
@@ -240,6 +240,117 @@ with st.sidebar:
     is_admin = st.session_state.user_email == "komododundee@gmail.com"
     if is_admin:
         st.success("🌟 Admin Access Granted")
+        
+        # ==========================================
+        # ADMIN ONLY: CSV STATUS & FORCE IMPORT
+        # ==========================================
+        with st.expander("📁 Admin: CSV Data Management"):
+            st.subheader("📋 CSV File Status")
+            
+            students_csv_exists = os.path.exists("students.csv")
+            assessments_csv_exists = os.path.exists("assessments.csv")
+            
+            col_status1, col_status2 = st.columns(2)
+            with col_status1:
+                if students_csv_exists:
+                    st.success("✅ students.csv: FOUND")
+                    try:
+                        with open("students.csv", 'r') as f:
+                            line_count = sum(1 for _ in f) - 1
+                        st.caption(f"   → {line_count} student records")
+                    except:
+                        pass
+                else:
+                    st.error("❌ students.csv: MISSING")
+            
+            with col_status2:
+                if assessments_csv_exists:
+                    st.success("✅ assessments.csv: FOUND")
+                    try:
+                        with open("assessments.csv", 'r') as f:
+                            line_count = sum(1 for _ in f) - 1
+                        st.caption(f"   → {line_count} assessment records")
+                    except:
+                        pass
+                else:
+                    st.error("❌ assessments.csv: MISSING")
+            
+            st.markdown("---")
+            st.subheader("🚀 Force Import from CSV")
+            st.warning("⚠️ This will import ALL data from CSV files as **orphaned** (teacher_id = NULL)")
+            
+            if st.button("🚀 FORCE IMPORT FROM CSV", type="primary", use_container_width=True):
+                with st.spinner("Importing data..."):
+                    from database_manager import import_from_csv, sync_identity_from_assessments
+                    result = import_from_csv()
+                    sync_result = sync_identity_from_assessments()
+                    st.success(f"✅ Import Complete!")
+                    st.write(f"   • Students imported: **{result['students']}**")
+                    st.write(f"   • Assessments imported: **{result['assessments']}**")
+                    st.write(f"   • Identity records synced: **{sync_result['created']}**")
+                    if result['students'] > 0 or result['assessments'] > 0:
+                        st.info("📌 Imported records are marked as ORPHANED. Use 'Admin Student Allocation' to assign them to teachers.")
+                    else:
+                        st.info("No new records were imported (files may be empty or already imported).")
+                st.rerun()
+        
+        st.markdown("---")
+        
+        # DATABASE SANITIZATION
+        with st.expander("🔧 Database Sanitization"):
+            st.subheader("🛠️ Maintenance Tools")
+            
+            # Show current stats
+            stats = get_database_stats()
+            st.write(f"📊 **Current Database Stats:**")
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                st.metric("Total Assessments", stats.get('total_assessments', 0))
+                st.metric("Total Students", stats.get('total_students', 0))
+            with col_s2:
+                st.metric("Orphaned Students", stats.get('orphaned_students', 0))
+                st.metric("Orphaned Assessments", stats.get('orphaned_assessments', 0))
+            
+            st.markdown("---")
+            
+            # Fix Teacher IDs button
+            col_fix1, col_fix2 = st.columns([2, 1])
+            with col_fix1:
+                st.write("**🔄 Fix Teacher ID Consistency**")
+                st.caption("Updates ALL assessment rows to match student_identity table")
+            with col_fix2:
+                if st.button("🔄 Fix All Teacher IDs", use_container_width=True):
+                    result = fix_all_teacher_ids()
+                    st.success(f"✅ Fixed! Synced {result['students_synced']} students, updated {result['total_assessment_rows_updated']} assessment rows.")
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            # Clear All Data - with double confirmation
+            st.write("**⚠️ Danger Zone**")
+            st.error("⚠️ This will DELETE ALL DATA from the database. Use only for clean re-import.")
+            
+            # First confirmation
+            if "confirm_clear" not in st.session_state:
+                st.session_state.confirm_clear = False
+            
+            if not st.session_state.confirm_clear:
+                if st.button("🗑️ Clear All Local Data", type="secondary", use_container_width=True):
+                    st.session_state.confirm_clear = True
+                    st.rerun()
+            else:
+                st.warning("⚠️ Are you absolutely sure? Click again to confirm deletion.")
+                col_confirm1, col_confirm2 = st.columns(2)
+                with col_confirm1:
+                    if st.button("✅ Yes, DELETE Everything", type="primary", use_container_width=True):
+                        result = clear_all_data()
+                        st.error(f"🗑️ Deleted! {result['assessments_deleted']} assessments, {result['identity_deleted']} identity records removed.")
+                        st.session_state.confirm_clear = False
+                        st.rerun()
+                with col_confirm2:
+                    if st.button("❌ Cancel", use_container_width=True):
+                        st.session_state.confirm_clear = False
+                        st.rerun()
     
     # STATUS INDICATORS
     st.divider()
@@ -361,6 +472,94 @@ with st.sidebar:
             st.rerun() # Refresh dropdown and state
         else:
             st.error("Please enter a student name first.")
+
+    st.divider()
+    
+    # ==========================================
+    # SPELLING JOURNEY - Historical Progress View
+    # ==========================================
+    if student_id:
+        with st.expander("📜 Spelling Journey (History)"):
+            teacher_id = st.session_state.get("user_email", "")
+            is_admin = teacher_id == "komododundee@gmail.com"
+            
+            history = get_student_history(student_id, teacher_id=teacher_id, admin=is_admin)
+            
+            if history:
+                st.caption(f"Showing {len(history)} recorded sessions for {student_name}")
+                
+                # Build display data
+                history_data = []
+                for row in history:
+                    # Row: id(0), student_id(1), teacher_id(2), test_date(3), created_at(4),
+                    # g0(5), g1(6), g2(7), g3(8), g4(9), g5(10), g6(11), g7(12), g8(13),
+                    # suggested_next(14), teacher_notes(15), teacher_refined_notes(16), struggling_words(17)
+                    
+                    test_date = row[3] if row[3] else row[4][:10]  # Prefer test_date, fallback to created_at
+                    created_at = row[4] if row[4] else ""
+                    
+                    # Determine the dominant G-level (lowest non-zero group)
+                    g_scores = [row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13]]
+                    g_names = ["g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"]
+                    dominant_g = "-"
+                    for i, score in enumerate(g_scores):
+                        if score is not None and score > 0:
+                            dominant_g = g_names[i]
+                            break
+                    
+                    # Struggling words from the record
+                    struggling = row[17] if row[17] else ""
+                    
+                    # Check for 100% scores to identify mastered words
+                    mastered = ""
+                    if all(s == 100 or s is None for s in g_scores):
+                        mastered = "🎯 100% All Groups"
+                    else:
+                        # Extract mastered words from raw transcription
+                        raw_text = row[5] if False else ""  # We don't have raw in this query
+                        # Check each group for 100% mastery
+                        mastered_groups = []
+                        for i, score in enumerate(g_scores):
+                            if score == 100:
+                                mastered_groups.append(g_names[i].upper())
+                        if mastered_groups:
+                            mastered = f"✅ {', '.join(mastered_groups)}"
+                    
+                    history_data.append({
+                        "Date": test_date[:10] if test_date else created_at[:10],
+                        "G-Level": dominant_g.upper(),
+                        "Struggling Words": struggling[:50] + "..." if len(struggling) > 50 else struggling,
+                        "Mastered": mastered
+                    })
+                
+                # Display as dataframe
+                history_df = pd.DataFrame(history_data)
+                st.dataframe(history_df, use_container_width=True, hide_index=True)
+                
+                # Show details on hover/expand
+                with st.expander("🔍 View Full Session Details"):
+                    for i, row in enumerate(history):
+                        st.markdown(f"**Session {i+1}** - {row[4][:16] if row[4] else 'Unknown date'}")
+                        cols_detail = st.columns(3)
+                        cols_detail[0].metric("g0 Phonemic", f"{row[5] if row[5] else 0}%")
+                        cols_detail[1].metric("g1 CVC", f"{row[6] if row[6] else 0}%")
+                        cols_detail[2].metric("g2 Digraphs", f"{row[7] if row[7] else 0}%")
+                        cols_detail2 = st.columns(3)
+                        cols_detail2[0].metric("g3 Silent E", f"{row[8] if row[8] else 0}%")
+                        cols_detail2[1].metric("g4 Vowel Teams", f"{row[9] if row[9] else 0}%")
+                        cols_detail2[2].metric("g5 R-Controlled", f"{row[10] if row[10] else 0}%")
+                        cols_detail3 = st.columns(3)
+                        cols_detail3[0].metric("g6 Clusters", f"{row[11] if row[11] else 0}%")
+                        cols_detail3[1].metric("g7 Multisyllabic", f"{row[12] if row[12] else 0}%")
+                        cols_detail3[2].metric("g8 Reduction", f"{row[13] if row[13] else 0}%")
+                        
+                        if row[16]:  # teacher_refined_notes
+                            st.markdown(f"📝 **Notes:** {row[16]}")
+                        if row[17]:  # struggling_words
+                            st.markdown(f"⚠️ **Struggling:** {row[17]}")
+                        st.divider()
+            else:
+                st.info(f"No history found for {student_name}. Save an assessment to start their journey!")
 
     st.divider()
     
@@ -743,7 +942,7 @@ if uploaded_file:
 # --- STEP 2: CLASS ANALYSIS ---
 st.header("📊 Class Overview & Grouping")
 
-from database_manager import get_all_latest_results, generate_class_groups, get_orphaned_students, assign_student_to_teacher, get_all_teachers
+from database_manager import get_all_latest_results, generate_class_groups, get_orphaned_students, assign_student_to_teacher, get_all_teachers, get_raw_assessments, bulk_assign_orphans_to_teacher, bulk_assign_students, get_database_stats, clear_all_data, fix_all_teacher_ids, sync_identity_from_assessments
 
 # Permissions check
 teacher_id = st.session_state.get("user_email", "default_teacher")
@@ -752,31 +951,91 @@ is_admin = teacher_id == "komododundee@gmail.com"
 if is_admin:
     st.subheader("🏫 School-Wide Research Dashboard")
     
+    # --- ADMIN RAW DATA PREVIEW ---
+    with st.expander("🔍 Admin Raw Data View (First 5 Rows)"):
+        columns, raw_rows = get_raw_assessments(limit=5)
+        if raw_rows:
+            raw_df = pd.DataFrame(raw_rows, columns=columns)
+            st.dataframe(raw_df, use_container_width=True)
+            st.caption(f"Showing first {len(raw_rows)} of all assessments in database.")
+        else:
+            st.info("No assessments found in database.")
+    
+    st.markdown("---")
+    
     # --- ADMIN ALLOCATION SECTION ---
     st.markdown("### 🛠️ Admin Student Allocation")
     orphans = get_orphaned_students()
+    all_teachers = get_all_teachers()
     
     if orphans:
-        # Display orphaned records
-        orphan_df = pd.DataFrame(orphans, columns=["Student ID", "Real Name"])
-        st.table(orphan_df)
+        st.warning(f"⚠️ Found **{len(orphans)}** orphaned student(s) needing assignment.")
         
-        # Allocation Form
-        with st.form("allocation_form"):
-            st.write("Assign Student to Teacher")
-            col1, col2 = st.columns(2)
-            with col1:
-                student_to_assign = st.selectbox("Select Student", options=orphans, format_func=lambda x: f"{x[1]} ({x[0]})")
-            with col2:
-                all_teachers = get_all_teachers()
-                teacher_to_assign = st.selectbox("Select Teacher", options=all_teachers)
-            
-            if st.form_submit_button("Assign and Update"):
-                assign_student_to_teacher(student_to_assign[0], teacher_to_assign)
-                st.success(f"Student {student_to_assign[1]} assigned to {teacher_to_assign}!")
-                st.rerun()
+        # Display orphaned records as table
+        orphan_data = []
+        for orphan in orphans:
+            orphan_data.append({
+                "Student ID": orphan[0],
+                "Real Name": orphan[1],
+                "Source": orphan[2] if len(orphan) > 2 else "unknown"
+            })
+        orphan_df = pd.DataFrame(orphan_data)
+        st.dataframe(orphan_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # BULK ASSIGNMENT (if multiple teachers exist)
+        if len(all_teachers) > 0:
+            st.subheader("⚡ Bulk Assignment")
+            col_bulk1, col_bulk2 = st.columns([2, 1])
+            with col_bulk1:
+                bulk_teacher = st.selectbox(
+                    "Assign ALL orphaned students to:",
+                    options=all_teachers,
+                    key="bulk_teacher_select"
+                )
+            with col_bulk2:
+                st.write("")  # Spacer
+                st.write("")
+                if st.button("📋 Assign ALL to Selected", type="primary", use_container_width=True):
+                    result = bulk_assign_orphans_to_teacher(bulk_teacher)
+                    st.success(f"✅ Bulk assignment complete!")
+                    st.write(f"   • **{result['students_assigned']}** students assigned to **{bulk_teacher}**")
+                    st.write(f"   • **{result['identity_rows_updated']}** identity rows updated")
+                    st.write(f"   • **{result['assessment_rows_updated']}** assessment rows updated")
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # INDIVIDUAL ASSIGNMENT (always shown)
+        if len(all_teachers) > 0:
+            st.subheader("👤 Individual Assignment")
+            with st.form("allocation_form"):
+                col1, col2, col3 = st.columns([2, 2, 1])
+                with col1:
+                    student_to_assign = st.selectbox(
+                        "Select Student", 
+                        options=orphans, 
+                        format_func=lambda x: f"{x[1]} ({x[0]})"
+                    )
+                with col2:
+                    teacher_to_assign = st.selectbox(
+                        "Assign to Teacher", 
+                        options=all_teachers
+                    )
+                with col3:
+                    st.write("")
+                    st.write("")
+                    submitted = st.form_submit_button("✅ Assign", use_container_width=True)
+                
+                if submitted:
+                    assign_student_to_teacher(student_to_assign[0], teacher_to_assign)
+                    st.success(f"✅ **{student_to_assign[1]}** assigned to **{teacher_to_assign}**!")
+                    st.rerun()
+        else:
+            st.info("No teachers registered yet. Teachers must save an assessment first to appear here.")
     else:
-        st.info("No orphaned students currently need assignment.")
+        st.success("🎉 All students have been assigned to a teacher!")
     
     st.markdown("---")
     
