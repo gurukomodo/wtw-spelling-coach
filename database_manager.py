@@ -304,6 +304,20 @@ def get_display_name(teacher_id, student_id):
     """
     return get_real_name(teacher_id, student_id)
 
+def get_student_name(teacher_id, student_id):
+    """
+    Returns the student's real name from the database.
+    Alias for get_real_name for clarity.
+    """
+    return get_real_name(teacher_id, student_id)
+
+def get_name_for_id(teacher_id, student_id):
+    """
+    Returns the real name for a given student_id.
+    Used throughout app.py to display student names to teachers.
+    """
+    return get_real_name(teacher_id, student_id)
+
 def get_student_id_by_name(teacher_id, real_name):
     """Looks up student_id by real_name."""
     conn = sqlite3.connect(DB_PATH)
