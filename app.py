@@ -1,8 +1,10 @@
+import os
+os.environ["OTEL_SDK_DISABLED"] = "true"
 import pandas as pd
 import streamlit as st
 from utils import preprocess_image
 from spelling_logic import transcribe_handwriting, run_scoring_crew, generate_personalized_practice_words
-from database_manager import init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings, save_teacher_settings, import_from_csv, get_student_history, get_mastered_words_from_raw, get_database_stats, fix_all_teacher_ids, clear_all_data, sync_identity_from_assessments
+from database_manager import init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings, save_teacher_settings, import_from_csv, get_student_history, get_mastered_words_from_raw, get_database_stats, fix_all_teacher_ids, clear_all_data, sync_identity_from_assessments, get_all_students_by_teacher, get_anonymized_history, get_all_students_for_allocation, update_student_teacher
 import random
 import os
 import csv
@@ -11,7 +13,7 @@ from datetime import datetime
 
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Unboxed Spelling Coach", layout="wide", page_icon="logo.svg")
+st.set_page_config(page_title="UnBoxEd Spelling Coach", layout="wide", page_icon="logo.svg")
 
 # --- PERSISTENCE HELPERS ---
 PROFILES_CSV = "students.csv"
@@ -186,7 +188,7 @@ def practice_lists_to_table(practice_lists):
 # --- INITIALIZE DATABASE ---
 init_db()  
 
-st.title("Unboxed Spelling Coach")
+st.title("UnBoxEd Spelling Coach")
 
 # --- INITIALIZE ALL MEMORY ---
 if "user_email" not in st.session_state:
@@ -247,17 +249,32 @@ with st.sidebar:
         st.info(" Please select your email above to login.")
     
     # --- NEW TEACHER REGISTRATION ---
-    with st.expander(" New Teacher? Register here"):
-        reg_name = st.text_input("Your Name", key="reg_name")
-        reg_email = st.text_input("Your Email", key="reg_email", placeholder="you@school.edu")
-        if st.button("Register", key="register_btn"):
-            if reg_name and reg_email and "@" in reg_email:
-                from database_manager import save_teacher_settings
-                save_teacher_settings(reg_email, "")
-                st.success(f" Registered! Please select your email from the dropdown above.")
+    st.subheader("Create Teacher Account")
+
+    # Wrap the inputs in a form
+    with st.form("registration_form", clear_on_submit=True):
+        new_name = st.text_input("Full Name")
+        new_email = st.text_input("Email Address")
+        
+        # The submit button for the form
+        submit_button = st.form_submit_button("Register & Log In")
+
+        if submit_button:
+            if new_name and new_email:
+                # 1. Save to database (Assuming your function name)
+                from database_manager import register_teacher
+                register_teacher(new_name, new_email)
+                
+                # 2. Update Session State to "Log In" immediately
+                st.session_state.authenticated = True
+                st.session_state.role = 'teacher'
+                st.session_state.email = new_email
+                st.session_state.user_name = new_name
+                
+                st.success(f"Welcome, {new_name}! You are now logged in.")
                 st.rerun()
             else:
-                st.error("Please enter a valid name and email address.")
+                st.error("Please provide both name and email.")
     
     # ADMIN CHECK
     is_admin = st.session_state.user_email == ADMIN_EMAIL
@@ -300,17 +317,17 @@ with st.sidebar:
             
             st.markdown("---")
             st.subheader(" Force Import from CSV")
-            st.warning(" This will import ALL data from CSV files as **orphaned** (teacher_id = NULL)")
+            st.warning(" This will import ALL data from CSV files as orphaned (teacher_id = NULL)")
             
-            if st.button(" FORCE IMPORT FROM CSV", type="primary", use_container_width=True):
+            if st.button(" FORCE IMPORT FROM CSV", type="primary", width="stretch"):
                 with st.spinner("Importing data..."):
                     from database_manager import import_from_csv, sync_identity_from_assessments
                     result = import_from_csv()
                     sync_result = sync_identity_from_assessments()
                     st.success(f" Import Complete!")
-                    st.write(f"   • Students imported: **{result['students']}**")
-                    st.write(f"   • Assessments imported: **{result['assessments']}**")
-                    st.write(f"   • Identity records synced: **{sync_result['created']}**")
+                    st.write(f"   • Students imported: {result['students']}")
+                    st.write(f"   • Assessments imported: {result['assessments']}")
+                    st.write(f"   • Identity records synced: {sync_result['created']}")
                     if result['students'] > 0 or result['assessments'] > 0:
                         st.info(" Imported records are marked as ORPHANED. Use 'Admin Student Allocation' to assign them to teachers.")
                     else:
@@ -325,7 +342,7 @@ with st.sidebar:
             
             # Show current stats
             stats = get_database_stats()
-            st.write(f" **Current Database Stats:**")
+            st.write(f" Current Database Stats:")
             col_s1, col_s2 = st.columns(2)
             with col_s1:
                 st.metric("Total Assessments", stats.get('total_assessments', 0))
@@ -339,41 +356,102 @@ with st.sidebar:
             # Fix Teacher IDs button
             col_fix1, col_fix2 = st.columns([2, 1])
             with col_fix1:
-                st.write("** Fix Teacher ID Consistency**")
+                st.write("Fix Teacher ID Consistency")
                 st.caption("Updates ALL assessment rows to match student_identity table")
             with col_fix2:
-                if st.button(" Fix All Teacher IDs", use_container_width=True):
+                if st.button(" Fix All Teacher IDs", width="stretch"):
                     result = fix_all_teacher_ids()
                     st.success(f" Fixed! Synced {result['students_synced']} students, updated {result['total_assessment_rows_updated']} assessment rows.")
                     st.rerun()
             
             st.markdown("---")
             
-            # Clear All Data - with double confirmation
-            st.write("** Danger Zone**")
-            st.error(" This will DELETE ALL DATA from the database. Use only for clean re-import.")
+            # ============================================================
+            # FACTORY RESET - The 'Big Red Button'
+            # ============================================================
+            st.write("FACTORY RESET (Big Red Button)")
+            st.error(" This will DELETE ALL assessments and student records. Teacher accounts will be PRESERVED.")
             
-            # First confirmation
-            if "confirm_clear" not in st.session_state:
-                st.session_state.confirm_clear = False
+            # Confirmation state
+            if "confirm_factory_reset" not in st.session_state:
+                st.session_state.confirm_factory_reset = False
             
-            if not st.session_state.confirm_clear:
-                if st.button(" Clear All Local Data", type="secondary", use_container_width=True):
-                    st.session_state.confirm_clear = True
+            if not st.session_state.confirm_factory_reset:
+                if st.button(" FACTORY RESET", type="primary", width="stretch"):
+                    st.session_state.confirm_factory_reset = True
                     st.rerun()
             else:
-                st.warning(" Are you absolutely sure? Click again to confirm deletion.")
-                col_confirm1, col_confirm2 = st.columns(2)
-                with col_confirm1:
-                    if st.button(" Yes, DELETE Everything", type="primary", use_container_width=True):
+                st.warning(" Are you absolutely sure? This cannot be undone!")
+                col_reset1, col_reset2 = st.columns(2)
+                with col_reset1:
+                    if st.button(" YES, RESET EVERYTHING", type="primary", width="stretch"):
                         result = clear_all_data()
-                        st.error(f" Deleted! {result['assessments_deleted']} assessments, {result['identity_deleted']} identity records removed.")
-                        st.session_state.confirm_clear = False
+                        st.success(f" Factory Reset Complete!")
+                        st.write(f"   • Assessments deleted: {result['assessments_deleted']}")
+                        st.write(f"   • Student identities deleted: {result['identity_deleted']}")
+                        st.write(f"   • Teacher accounts: PRESERVED")
+                        st.session_state.confirm_factory_reset = False
                         st.rerun()
-                with col_confirm2:
-                    if st.button(" Cancel", use_container_width=True):
-                        st.session_state.confirm_clear = False
+                with col_reset2:
+                    if st.button(" Cancel", width="stretch"):
+                        st.session_state.confirm_factory_reset = False
                         st.rerun()
+        
+        st.markdown("---")
+        
+        # ============================================================
+        # ADMIN: STUDENT ALLOCATION TABLE
+        # ============================================================
+        with st.expander(" Manage Student Allocations", expanded=False):
+            st.subheader("Assign Students to Teachers")
+            st.caption("Reassign students to different teachers. Changes apply to both student_identity AND assessments tables simultaneously.")
+            
+            from database_manager import get_all_students_for_allocation, update_student_teacher, get_all_teachers
+            
+            # Get all students and all teachers
+            all_students = get_all_students_for_allocation()
+            all_teachers = get_all_teachers()
+            
+            if not all_students:
+                st.info("No students found in database. Import data or add new assessments first.")
+            else:
+                st.write(f"{len(all_students)} students total")
+                st.markdown("---")
+                
+                # Display allocation table as a form for each student
+                for i, student in enumerate(all_students):
+                    with st.container():
+                        col_name, col_teacher, col_btn = st.columns([2, 2, 1])
+                        
+                        with col_name:
+                            st.markdown(f"{student['name']}")
+                            st.caption(f"ID: {student['student_id'][:16]}... | Alias: {student['pseudonym']}")
+                        
+                        with col_teacher:
+                            # Dropdown of all teachers
+                            teacher_options = ["Unassigned"] + all_teachers
+                            current_idx = 0
+                            if student['current_teacher'] != "Unassigned":
+                                try:
+                                    current_idx = teacher_options.index(student['current_teacher'])
+                                except ValueError:
+                                    current_idx = 0
+                            
+                            selected_teacher = st.selectbox(
+                                f"Assign {student['name']} to:",
+                                options=teacher_options,
+                                index=current_idx,
+                                key=f"teacher_select_{i}_{student['student_id']}",
+                                label_visibility="collapsed"
+                            )
+                        
+                        with col_btn:
+                            # Update button for this student
+                            if st.button("Update", key=f"update_btn_{i}_{student['student_id']}", width="stretch"):
+                                new_teacher = None if selected_teacher == "Unassigned" else selected_teacher
+                                result = update_student_teacher(student['student_id'], new_teacher)
+                                st.success(f"Updated! {result['assessments_updated']} assessments moved.")
+                                st.rerun()
     
     # STATUS INDICATORS
     st.divider()
@@ -411,37 +489,55 @@ with st.sidebar:
 
     st.divider()
     
-    # STUDENT SELECTION (Privacy: Teachers see real names, session stores pseudonym)
+    # ============================================================
+    # STUDENT SELECTION (Privacy-Preserving Implementation)
+    # Teachers see real names for instructional clarity
+    # Session state stores hashed_id/pseudonym for AI processing
+    # ============================================================
     teacher_id = st.session_state.get("user_email", "default_teacher")
-    from database_manager import get_teacher_students, get_student_id_by_name, generate_pseudonym
+    from database_manager import get_all_students_by_teacher, get_student_id_by_name, generate_pseudonym, get_pseudonym
     
-    student_map = get_teacher_students(teacher_id)  # {student_id: real_name}
+    # BUG FIX: Use get_all_students_by_teacher to get ALL students for this teacher
+    # regardless of legacy CSV ID format issues
+    all_teacher_students = get_all_students_by_teacher(teacher_id)
     
-    # Build dropdown options: show real names, store pseudonym
+    # Build dropdown: teacher sees real names, session stores pseudonym
     existing_students = []
-    for sid, rname in student_map.items():
-        existing_students.append({"label": rname, "id": sid})
+    for s in all_teacher_students:
+        existing_students.append({
+            "label": s["name"],  # Real name for teacher visibility
+            "id": s["student_id"],  # Internal ID for data operations
+            "pseudonym": s["pseudonym"] or f"Student_{len(existing_students) + 1:02d}"
+        })
     
     existing_names = [s["label"] for s in existing_students]
     selection = st.selectbox(" Load Student Profile", options=["None / New Student"] + existing_names)
     
     if selection != "None / New Student":
-        # Find the student_id for this name
+        # Find the student_id and pseudonym for this name
         student_id = None
+        pseudonym = None
+        student_name = selection  # Teacher sees real name (instructional clarity)
         for s in existing_students:
             if s["label"] == selection:
                 student_id = s["id"]
+                pseudonym = s["pseudonym"]
                 break
-        student_name = selection  # Teacher sees real name
-        pseudonym = f"Student_{list(student_map.keys()).index(student_id) + 1:02d}" if student_id else selection
     else:
         student_name = st.text_input("Student Name (required)", key="name_input")
-        student_id = get_or_create_student_id(teacher_id, student_name) if student_name else None
-        pseudonym = generate_pseudonym(teacher_id, student_id) if student_id else None
+        if student_name:
+            student_id = get_or_create_student_id(teacher_id, student_name)
+            pseudonym = get_pseudonym(teacher_id, student_id) if student_id else None
+        else:
+            student_id = None
+            pseudonym = None
     
-    # Store pseudonym in session state for privacy
+    # Store pseudonym/hashed_id in session state for privacy
+    # AI processing will use this, not the real name
     if student_id:
-        st.session_state.current_pseudonym = pseudonym
+        st.session_state.current_student_id = student_id
+        st.session_state.current_student_name = student_name  # For teacher display only
+        st.session_state.current_pseudonym = pseudonym or generate_pseudonym(teacher_id, student_id)
     
     # Logic to Load Student Data when name is changed
     if "last_loaded_student" not in st.session_state:
@@ -463,7 +559,7 @@ with st.sidebar:
     st.divider()
     st.caption(" Privacy: Student data is anonymized for AI processing.")
     
-    st.write("** Target Group**")
+    st.write("Target Group")
     target_group_input = st.selectbox(
         "Select student's current G-level",
         options=[f"g{i}" for i in range(9)],
@@ -473,7 +569,7 @@ with st.sidebar:
     st.divider()
     
     # STUDENT STRUGGLING WORDS INPUT
-    st.write("** Experienced Errors (Long-term Struggles)**")
+    st.write("Experienced Errors (Long-term Struggles)")
     struggling_words_input = st.text_area(
         "Enter words student has struggled with across multiple tests ('Correct:Attempt')",
         height=120,
@@ -483,7 +579,7 @@ with st.sidebar:
     
     st.divider()
     # MASTERED WORDS INPUT
-    st.write("** Mastered Words (Spelled Correctly)**")
+    st.write("Mastered Words (Spelled Correctly)")
     mastered_words_input = st.text_area(
         "Enter words the student consistently spells correctly",
         placeholder="e.g., cat, bed, sit, run (comma-separated)",
@@ -567,12 +663,12 @@ with st.sidebar:
                 
                 # Display as dataframe
                 history_df = pd.DataFrame(history_data)
-                st.dataframe(history_df, use_container_width=True, hide_index=True)
+                st.dataframe(history_df, width="stretch", hide_index=True)
                 
                 # Show details on hover/expand
                 with st.expander(" View Full Session Details"):
                     for i, row in enumerate(history):
-                        st.markdown(f"**Session {i+1}** - {row[4][:16] if row[4] else 'Unknown date'}")
+                        st.markdown(f"Session {i+1} - {row[4][:16] if row[4] else 'Unknown date'}")
                         cols_detail = st.columns(3)
                         cols_detail[0].metric("g0 Phonemic", f"{row[5] if row[5] else 0}%")
                         cols_detail[1].metric("g1 CVC", f"{row[6] if row[6] else 0}%")
@@ -587,9 +683,9 @@ with st.sidebar:
                         cols_detail3[2].metric("g8 Reduction", f"{row[13] if row[13] else 0}%")
                         
                         if row[16]:  # teacher_refined_notes
-                            st.markdown(f" **Notes:** {row[16]}")
+                            st.markdown(f"Notes: {row[16]}")
                         if row[17]:  # struggling_words
-                            st.markdown(f" **Struggling:** {row[17]}")
+                            st.markdown(f"Struggling: {row[17]}")
                         st.divider()
             else:
                 st.info(f"No history found for {student_name}. Save an assessment to start their journey!")
@@ -597,7 +693,7 @@ with st.sidebar:
     st.divider()
     
     # WORD BANK TOOLS
-    st.write("** Word Bank Tools**")
+    st.write("Word Bank Tools")
 
     # G-GROUP LEGEND (Moved to expander at bottom)
     with st.expander(" Diagnostic Group Description"):
@@ -663,9 +759,10 @@ if st.button(" AI-Generate Personalized Practice Lists"):
                 combined_struggling = custom_input if custom_input.strip() else db_struggling_words
                 
                 # Generate personalized words using AI (pass ID to maintain privacy)
+                # PRIVACY: student_id is used, AI sees only 'The Student' alias
                 try:
                     personalized_words = generate_personalized_practice_words(
-                        student_name=student_id,
+                        student_id=student_id,  # Pass ID, not name - AI uses alias internally
                         target_group=g_key,
                         teacher_notes=teacher_notes,
                         struggling_words=combined_struggling,
@@ -788,7 +885,7 @@ if uploaded_file:
     
     with col_img:
         st.subheader(" AI's View (Cleaned)")
-        st.image(clean_img, use_container_width=True)
+        st.image(clean_img, width="stretch")
         if st.button(" Step 2: Read Handwriting"):
             with st.spinner("AI is reading..."):
                 st.session_state.raw_transcription = transcribe_handwriting(clean_base64)
@@ -967,10 +1064,14 @@ if uploaded_file:
             # Get struggling words from session state
             struggling_words = st.session_state.get("struggling_words_input", "")
             
-            save_assessment(save_obj, edited_text, teacher_refinement=final_notes, struggling_words=struggling_words)
+            # PASS teacher_id to auto-create student_identity if new student
+            current_teacher_id = st.session_state.get("user_email", "default_teacher")
+            save_assessment(save_obj, edited_text, teacher_refinement=final_notes, 
+                          struggling_words=struggling_words, teacher_id=current_teacher_id)
             
-            st.success(f" Final assessment for {student_name} has been saved with clean tags!")
-            st.balloons()
+            st.success(f" Final assessment for {student_name} has been saved!")
+            # Refresh to show updated G-Level in dashboard
+            st.rerun()
             
 # --- STEP 2: CLASS ANALYSIS ---
 st.header("Class Overview & Grouping")
@@ -1009,9 +1110,9 @@ if is_admin:
     with st.expander("Database Repair"):
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            st.write("**Button A: Link Ghost Records**")
+            st.write("Button A: Link Ghost Records")
             st.caption("Syncs all assessment students to identity table.")
-            if st.button("Link Ghost Records", use_container_width=True):
+            if st.button("Link Ghost Records", width="stretch"):
                 with st.spinner("Linking ghost records..."):
                     result = fix_all_teacher_ids()
                     sync_result = sync_identity_from_assessments()
@@ -1020,9 +1121,9 @@ if is_admin:
                     st.rerun()
         
         with col_btn2:
-            st.write("**Button B: Global Claim**")
+            st.write("Button B: Global Claim")
             st.caption("Assigns ALL unassigned students to glenp@gm.yhsh.tn.edu.tw.")
-            if st.button("Global Claim", use_container_width=True):
+            if st.button("Global Claim", width="stretch"):
                 with st.spinner("Assigning all orphans..."):
                     result = bulk_assign_orphans_to_teacher("glenp@gm.yhsh.tn.edu.tw")
                     st.success(f"Assigned {result['students_assigned']} students to glenp@gm.yhsh.tn.edu.tw")
@@ -1053,7 +1154,7 @@ if is_admin:
         
         # Display with formatted columns (exclude hidden student_id)
         display_cols = ["Name", "Last Assessment", "Total Attempts", "Teacher"]
-        st.dataframe(table_df[display_cols], use_container_width=True, hide_index=True)
+        st.dataframe(table_df[display_cols], width="stretch", hide_index=True)
         
         st.caption(f"Showing {len(all_students)} students")
         
@@ -1072,14 +1173,14 @@ if is_admin:
                     bulk_teacher = st.selectbox("Assign unassigned students to:", options=all_teachers, key="bulk_admin_assign")
                 with col_btn:
                     st.write("")
-                    if st.button("Assign All", type="primary", use_container_width=True):
+                    if st.button("Assign All", type="primary", width="stretch"):
                         orphan_ids = [s["student_id"] for s in orphans]
                         result = bulk_assign_students(orphan_ids, bulk_teacher)
                         st.success(f"Assigned {result['students_assigned']} students to {bulk_teacher}")
                         st.rerun()
             
             # Individual assign with display_name
-            st.markdown("**Individual Assignment:**")
+            st.markdown("Individual Assignment:")
             col_names, col_teachers, col_btns = st.columns([2, 2, 1])
             
             orphan_options = [(s["student_id"], s["name"]) for s in orphans]
@@ -1088,7 +1189,7 @@ if is_admin:
             if all_teachers_list:
                 selected = st.selectbox("Select student:", options=orphan_options, format_func=lambda x: x[1])
                 selected_teacher = st.selectbox("Assign to:", options=all_teachers_list)
-                if st.button("Force-Assign to Me", use_container_width=True):
+                if st.button("Force-Assign to Me", width="stretch"):
                     assign_student_to_teacher(selected[0], selected_teacher)
                     st.success(f"{selected[1]} assigned to {selected_teacher}")
                     st.rerun()
@@ -1098,39 +1199,73 @@ if is_admin:
 # ============================================================
 # TEACHER DASHBOARD
 # ============================================================
-else:
-    st.subheader(f"My Class ({teacher_id})")
+# Only run this if the user is authenticated and is a teacher
+if st.session_state.get('authenticated') and st.session_state.get('role') == 'teacher':
     
-    # Get students for this teacher
-    teacher_students = get_teacher_student_status(teacher_id)
+    st.subheader("My Class")
     
-    if not teacher_students:
-        st.info("No students assigned to you yet. Ask admin to assign students.")
+    # Grab the email from session state
+    teacher_id = st.session_state.get('email')
+    
+    # NOW we define the variable that was causing the crash
+    from database_manager import get_all_students_by_teacher
+    teacher_students_list = get_all_students_by_teacher(teacher_id)
+    
+    if not teacher_students_list:
+        st.info("No students assigned to you yet. Use 'Add New Assessment' to get started!")
+    
+
     else:
-        st.write(f"**{len(teacher_students)} students in your class**")
-        
-        # Show student cards
-        for student in teacher_students:
-            with st.container():
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    st.markdown(f"**{student['name']}**")
-                    st.caption(f"Attempts: {student['total_attempts']} | Last: {student['last_date'][:10] if student['last_date'] else 'Never'}")
-                
-                with col2:
-                    if student['current_g_level']:
-                        st.metric("Current G-Level", student['current_g_level'])
-                    else:
-                        st.metric("Current G-Level", "N/A")
-                
-                with col3:
-                    if student['most_struggled_word']:
-                        st.metric("Most Struggled", student['most_struggled_word'][:20])
-                    else:
-                        st.metric("Most Struggled", "N/A")
-                
-                st.divider()
+            st.write(f"{len(teacher_students_list)} students in your class")
+            
+            # Show student cards
+            for student in teacher_students_list:
+                with st.container():
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    # We define this here so we can use it for the button key
+                    current_student_name = student['name'] 
+
+                    with col1:
+                        st.markdown(f"{current_student_name}")
+                        st.caption(f"Alias: {student['pseudonym']} | Attempts: {student['total_attempts']}")
+                    
+                    with col2:
+                        g_val = student.get('current_g_level', 'N/A')
+                        st.metric("Current G-Level", g_val.split(',')[0] if g_val else "N/A")
+                    
+                    with col3:
+                        struggled = student.get('most_struggled_word', "N/A")
+                        if ':' in struggled:
+                            struggled = struggled.split(':')[0]
+                        st.metric("Most Struggled", struggled[:20])
+
+                    # --- 🤖 INSERT AI BUTTON HERE ---
+                    # This button stays inside the 'with st.container()' 
+                    # so it looks like it belongs to this specific student card.
+                    
+                    if st.button(f"Generate AI Coach Report for {current_student_name}", key=f"ai_{current_student_name}"):
+                        with st.spinner(f"Consulting Gemini about {student['pseudonym']}..."):
+                            # 1. Get the anonymized data from the database
+                            from database_manager import get_anonymized_history
+                            history = get_anonymized_history(current_student_name)
+                            
+                            # 2. Call the AI function from spelling_logic.py
+                            from spelling_logic import get_ai_coaching_report
+                            report = get_ai_coaching_report(
+                                student_alias=student['pseudonym'], 
+                                g_level=student.get('current_g_level', 'N/A'), 
+                                errors=history.get('error_list', 'No errors recorded')
+                            )
+                            
+                            # 3. Display the result
+                            st.info(report)
+else:
+    # If they aren't a teacher or aren't logged in, show the Welcome screen instead
+    st.title("Welcome to UnBoxEd")
+    st.write("Please log in to see your class dashboard.")
+                    
+st.divider() # This marks the end of one student card
 
 # ============================================================
 # SHARED: CLASS OVERVIEW & GROUPING (for both admin and teachers)
@@ -1149,7 +1284,7 @@ else:
     available_cols = [c for c in cols_to_show if c < len(df.columns)]
     display_df = df.iloc[:, available_cols].copy()
     display_df.columns = ["Student ID", "Date", "Created At", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "Suggested", "Notes", "Struggling"]
-    st.dataframe(display_df, use_container_width=True)
+    st.dataframe(display_df, width="stretch")
     
     st.markdown("---")
     
@@ -1169,7 +1304,7 @@ else:
         
         for group_name, students in teaching_groups.items():
             with cols[col_idx]:
-                st.markdown(f"**{group_name}**")
+                st.markdown(f"{group_name}")
                 for sid in students:
                     display_name = get_name_for_id(teacher_id, sid)
                     st.markdown(f"- {display_name}")
@@ -1183,7 +1318,7 @@ if st.session_state.practice_lists:
     table_df = practice_lists_to_table(st.session_state.practice_lists)
     
     if table_df is not None:
-        st.dataframe(table_df, hide_index=False, use_container_width=True)
+        st.dataframe(table_df, hide_index=False, width="stretch")
         st.success(f"Table contains {len(table_df)} words for {len(table_df.columns)} students.")
     
     st.divider()
@@ -1194,7 +1329,7 @@ if st.session_state.diagnostic_test:
     st.caption(f"Generated test saved as: {st.session_state.diagnostic_test['file_name']}")
     
     st.subheader("20-Word Diagnostic Test")
-    st.write("**Instructions:** Read these words aloud to the student.")
+    st.write("Instructions: Read these words aloud to the student.")
     
     for i, word in enumerate(st.session_state.diagnostic_test['words'], 1):
         st.write(f"{i}. {word}")

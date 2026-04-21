@@ -5,7 +5,37 @@ from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List
 from database_manager import get_latest_teacher_notes, get_struggling_words
+import google.generativeai as genai
+import streamlit as st
 
+# Setup the API
+genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+model = genai.GenerativeModel('gemini-1.5-pro')
+
+def get_ai_coaching_report(student_alias, g_level, errors):
+    """
+    Sends anonymized error data to Gemini and returns a coaching plan.
+    """
+    prompt = f"""
+    You are an expert Literacy Coach. 
+    Analyze the spelling performance of '{student_alias}'.
+    Current G-Level: {g_level}
+    Specific Errors: {errors}
+
+    Please provide:
+    1. A 'Diagnostic Insight' (What phonetic patterns are they missing?)
+    2. Three 'Targeted Activities' for the teacher to use this week.
+    3. A 'Next Step' recommendation.
+    
+    Keep the tone professional, encouraging, and concise.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI Coaching currently unavailable: {str(e)}"
+    
 load_dotenv()
 
 # --- 1. DYNAMIC WORD LIST LOGIC ---
@@ -164,16 +194,27 @@ def run_scoring_crew(student_name, transcription_text):
     return crew.kickoff()
     return result
 '''
-def run_scoring_crew(student_name, transcription_text):
+def run_scoring_crew(student_id, transcription_text):
+    """
+    Runs the AI scoring crew for a student's transcription.
+    PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
+    
+    Args:
+        student_id: Internal student ID (never shown to AI)
+        transcription_text: The student's spelling attempts
+    """
+    # PRIVACY: Always use 'The Student' alias in AI prompts
+    student_alias = "The Student"
+    
     # 1. FETCH PREVIOUS FEEDBACK
-    past_feedback = get_latest_teacher_notes(student_name)
-    feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR THIS STUDENT: {past_feedback}" if past_feedback else ""
+    past_feedback = get_latest_teacher_notes(student_id)
+    feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR {student_alias}: {past_feedback}" if past_feedback else ""
 
     # 2. DEFINE THE INSTRUCTIONS
     task_description = f"""
     {feedback_context}
     
-    Analyze the following spelling attempts for {student_name}:
+    Analyze the following spelling attempts for {student_alias}:
     {transcription_text}
     
     Compare them to: {CURRENT_TEST_WORDS}
@@ -238,7 +279,7 @@ def run_scoring_crew(student_name, transcription_text):
         print(f"Crew execution error recorded: {e}")
         # Return a fake object so app.py doesn't see 'None' and crash!
         class FallbackResult:
-            student_name = student_name
+            student_name = "The Student"  # PRIVACY: Use alias
             teacher_notes = f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually."
             suggested_next_groups = []
             # Fill in 0s so the UI metrics don't break
@@ -275,7 +316,7 @@ word_generator = Agent(
     allow_delegation=False
 )
 
-def generate_personalized_practice_words(student_name, target_group, teacher_notes, struggling_words, mastered_words="", unit_description="", custom_words_input=None):
+def generate_personalized_practice_words(student_id, target_group, teacher_notes, struggling_words, mastered_words="", unit_description="", custom_words_input=None):
     """
     Uses AI to generate 10 personalized spelling words based on:
     - Unit Description (global class focus)
@@ -285,8 +326,10 @@ def generate_personalized_practice_words(student_name, target_group, teacher_not
     - mastered_words (list of words student consistently spells correctly)
     - Custom words input by teacher
     
+    PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
+    
     Args:
-        student_name: Name of the student
+        student_id: Internal student ID (never shown to AI)
         target_group: Primary G-level to target (e.g., "g4")
         teacher_notes: Teacher's refinement notes with background/struggles
         struggling_words: Words student has struggled with before ('Correct:Attempt' format)
@@ -297,6 +340,9 @@ def generate_personalized_practice_words(student_name, target_group, teacher_not
     Returns:
         List of 10 personalized words, or fallback list if AI fails
     """
+    
+    # PRIVACY: Always use 'The Student' alias in AI prompts
+    student_alias = "The Student"
     
     # Group descriptions and patterns
     GROUP_INFO = {
@@ -364,7 +410,7 @@ def generate_personalized_practice_words(student_name, target_group, teacher_not
     task_description = f"""
 You are creating a personalized 10-word spelling practice list for a student.
 
-STUDENT: {student_name}
+STUDENT: {student_alias}
 
 TARGET G-LEVEL: {target_group.upper()} - {group_info['name']}
 Phonetic Patterns to Practice: {group_info['patterns']}
