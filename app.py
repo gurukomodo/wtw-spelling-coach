@@ -68,7 +68,7 @@ def migrate_legacy_profiles():
 
     updated = False
     profiles_data = []
-    teacher_id = st.session_state.get("user_email", "default_teacher")
+    teacher_id = st.session_state.get("email", "admin@example.com")
     
     try:
         with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
@@ -166,8 +166,8 @@ def initialize_session_state():
     if 'role' not in st.session_state:
         st.session_state.role = None
     
-    if "user_email" not in st.session_state:
-        st.session_state.user_email = "admin@example.com"
+    if "user_email" not in st.session_state and "email" not in st.session_state:
+        st.session_state.email = "admin@example.com"
     
     for key, default in [
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
@@ -187,10 +187,10 @@ def main():
     """Main router that checks authentication and routes to appropriate page."""
     initialize_session_state()
     
-    # Handle URL query params
+    # Handle URL query params - standardize to use 'email'
     query_params = st.query_params
     if "email" in query_params:
-        st.session_state.user_email = query_params["email"]
+        st.session_state.email = query_params["email"]
     
     # Route based on authentication
     if not st.session_state.get('authenticated'):
@@ -202,32 +202,52 @@ def main():
 # PAGE: REGISTRATION
 # =============================================================================
 def show_registration_page():
-    """Display the registration/login page for unauthenticated users."""
-    st.title("Welcome to UnBoxEd Spelling Coach")
-    st.subheader("Create Teacher Account")
+    st.title("Welcome to Un.Box.Ed.")
     
-    with st.form("registration_form", clear_on_submit=True):
-        new_name = st.text_input("Full Name")
-        new_email = st.text_input("Email Address")
-        submit_button = st.form_submit_button("Register & Log In")
+    # 1. Get existing teachers from the database
+    from database_manager import get_all_teachers # You may need to add this to database_manager.py
+    existing_teachers = get_all_teachers() # Should return a list of dictionaries/tuples
+    
+    col1, col2 = st.columns(2)
 
-        if submit_button:
-            if new_name and new_email:
-                register_teacher(new_name, new_email)
-                
-                # Set session state keys to unlock the rest of the app
-                st.session_state.authenticated = True
-                st.session_state.user_name = new_name
-                st.session_state.email = new_email
-                st.session_state.role = 'teacher'
-                
-                # Persist to URL query params for Remember Me
-                st.query_params["email"] = new_email
-                
-                st.success(f"Welcome, {new_name}!")
-                st.rerun()
-            else:
-                st.error("Please provide both name and email.")
+    with col1:
+        st.subheader("Returning Coach")
+        if existing_teachers:
+            # Create a list of "Name (Email)" for the dropdown
+            teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
+            selected = st.selectbox("Choose your account:", ["Select..."] + teacher_options)
+            
+            if selected != "Select...":
+                if st.button("Login"):
+                    # Extract email from the string "Name (email@test.com)"
+                    email = selected.split('(')[-1].replace(')', '')
+                    name = selected.split(' (')[0]
+                    
+                    st.session_state.authenticated = True
+                    st.session_state.user_name = name
+                    st.session_state.email = email
+                    st.session_state.role = 'teacher'
+                    st.rerun()
+        else:
+            st.info("No accounts found yet. Register on the right!")
+
+    with col2:
+        st.subheader("New Coach")
+        with st.form("registration_form", clear_on_submit=True, enter_to_submit=False):
+            new_name = st.text_input("Full Name")
+            new_email = st.text_input("Email Address")
+            submit_button = st.form_submit_button("Register & Log In")
+
+            if submit_button:
+                if new_name and new_email:
+                    from database_manager import register_teacher
+                    register_teacher(new_name, new_email)
+                    
+                    st.session_state.authenticated = True
+                    st.session_state.user_name = new_name
+                    st.session_state.email = new_email
+                    st.session_state.role = 'teacher'
+                    st.rerun()
 
 # =============================================================================
 # PAGE: TEACHER DASHBOARD (with sidebar navigation)
@@ -250,10 +270,8 @@ def show_teacher_dashboard():
     init_db()
     migrate_legacy_profiles()
     
-    # Auto-assign unowned students
-    num_assigned = assign_unowned_students(st.session_state.user_email)
-    if num_assigned > 0:
-        st.toast(f" Assigned {num_assigned} unowned students to your profile.")
+    # Get current teacher email (standardized)
+    current_teacher_email = st.session_state.get('email')
     
     # Route to appropriate page function
     if page == "My Class":
@@ -270,7 +288,7 @@ def display_teacher_class():
     """Display the Teacher Dashboard with student cards and AI coaching."""
     st.header("My Class Dashboard")
     
-    teacher_id = st.session_state.get('email', st.session_state.get('user_email'))
+    teacher_id = st.session_state.get('email')
     teacher_students_list = get_all_students_by_teacher(teacher_id)
     
     if not teacher_students_list:
@@ -331,7 +349,7 @@ def display_assessment_form():
     with st.sidebar:
         st.header(" Student Profile")
         
-        teacher_id = st.session_state.get('email', st.session_state.get('user_email'))
+        teacher_id = st.session_state.get('email')
         all_teacher_students = get_all_students_by_teacher(teacher_id)
         
         # Build dropdown options
@@ -634,7 +652,7 @@ def display_assessment_form():
         
         # Class Settings
         st.header(" Class Settings")
-        current_unit_desc = get_teacher_settings(st.session_state.user_email)
+        current_unit_desc = get_teacher_settings(st.session_state.email)
         
         if not current_unit_desc:
             st.warning(" Please enter your Unit Description")
@@ -647,7 +665,7 @@ def display_assessment_form():
         )
         
         if unit_desc != current_unit_desc:
-            save_teacher_settings(st.session_state.user_email, unit_desc)
+            save_teacher_settings(st.session_state.email, unit_desc)
             st.session_state.unit_description = unit_desc
             st.toast("Unit description saved!")
         
@@ -814,6 +832,7 @@ def display_assessment_form():
                 pass
             save_obj = SaveObject()
             save_obj.student_id = student_id
+            save_obj.real_name = student_name  # Pass real name for proper linking
             save_obj.suggested_next_groups = cleaned_targets
             save_obj.teacher_notes = notes
             save_obj.g0_phonemic_awareness = g_scores["g0"]
@@ -827,7 +846,7 @@ def display_assessment_form():
             save_obj.g8_reduction_morphology = g_scores["g8"]
 
             struggling_words = st.session_state.get("struggling_words_input", "")
-            current_teacher_id = st.session_state.get("user_email")
+            current_teacher_id = st.session_state.get("email")
             save_assessment(save_obj, edited_text, teacher_refinement=final_notes, 
                         struggling_words=struggling_words, teacher_id=current_teacher_id)
             
@@ -839,9 +858,9 @@ def display_assessment_form():
 # =============================================================================
 def display_admin_page():
     """Display the Admin dashboard with factory reset and student allocation tools."""
-    teacher_id = st.session_state.get('email', st.session_state.get('user_email'))
+    teacher_email = st.session_state.get('email')
     ADMIN_EMAIL = "komododundee@gmail.com"
-    is_admin = teacher_id == ADMIN_EMAIL
+    is_admin = teacher_email and teacher_email.lower() == ADMIN_EMAIL.lower()
     
     if not is_admin:
         st.error(" Admin access required.")
@@ -981,17 +1000,25 @@ def display_admin_page():
                         st.caption(f"ID: {student['student_id'][:16]}... | Alias: {student['pseudonym']}")
                     
                     with col_teacher:
-                        teacher_options = ["Unassigned"] + all_teachers_list
+                        # Build dropdown with "Name (email)" format
+                        teacher_display_options = ["Unassigned"]
+                        teacher_emails = [None]  # None for Unassigned
+                        
+                        for t in all_teachers_list:
+                            teacher_display_options.append(f"{t['name']} ({t['email']})")
+                            teacher_emails.append(t['email'])
+                        
+                        # Find current selection index
                         current_idx = 0
-                        if student['current_teacher'] != "Unassigned":
+                        if student['current_teacher'] and student['current_teacher'] != "Unassigned":
                             try:
-                                current_idx = teacher_options.index(student['current_teacher'])
+                                current_idx = teacher_emails.index(student['current_teacher'])
                             except ValueError:
                                 current_idx = 0
                         
-                        selected_teacher = st.selectbox(
+                        selected_display = st.selectbox(
                             f"Assign {student['name']} to:",
-                            options=teacher_options,
+                            options=teacher_display_options,
                             index=current_idx,
                             key=f"teacher_select_{i}_{student['student_id']}",
                             label_visibility="collapsed"
@@ -999,9 +1026,17 @@ def display_admin_page():
                     
                     with col_btn:
                         if st.button("Update", key=f"update_btn_{i}_{student['student_id']}", width="stretch"):
-                            new_teacher = None if selected_teacher == "Unassigned" else selected_teacher
+                            # Extract email from selection
+                            if selected_display == "Unassigned":
+                                new_teacher = None
+                            else:
+                                new_teacher = selected_display.split('(')[-1].replace(')', '')
+                            
                             result = update_student_teacher(student['student_id'], new_teacher)
-                            st.success(f"Updated! {result['assessments_updated']} assessments moved.")
+                            if result['assessments_updated'] > 0:
+                                st.success(f"Updated!")
+                            else:
+                                st.info(f"No changes needed.")
                             st.rerun()
     
     st.markdown("---")
@@ -1027,13 +1062,20 @@ def display_admin_page():
     if not all_students:
         st.info("No students found. Import legacy CSV data or save new assessments.")
     else:
+        from database_manager import get_teacher_name
+        
         table_data = []
         for s in all_students:
+            teacher_display = s["teacher"]
+            if s["teacher"] and s["teacher"] != "Unassigned":
+                # Show teacher's name instead of email
+                teacher_display = get_teacher_name(s["teacher"])
+            
             table_data.append({
                 "Name": s["name"],
                 "Last Assessment": s["last_date"][:10] if s["last_date"] else "Never",
                 "Total Attempts": s["total_attempts"],
-                "Teacher": s["teacher"],
+                "Teacher": teacher_display,
             })
         
         table_df = pd.DataFrame(table_data)
@@ -1049,15 +1091,21 @@ def display_admin_page():
             
             all_teachers_for_assign = get_all_teachers()
             if all_teachers_for_assign:
+                # Show teacher names in dropdown
+                teacher_options = [{"email": t["email"], "name": t["name"]} for t in all_teachers_for_assign]
+                teacher_display_options = [f"{t['name']} ({t['email']})" for t in teacher_options]
+                
                 col_bulk, col_btn = st.columns([3, 1])
                 with col_bulk:
-                    bulk_teacher = st.selectbox("Assign unassigned students to:", options=all_teachers_for_assign, key="bulk_admin_assign")
+                    selected_display = st.selectbox("Assign unassigned students to:", options=["Select..."] + teacher_display_options, key="bulk_admin_assign")
                 with col_btn:
                     st.write("")
-                    if st.button("Assign All", type="primary", width="stretch"):
+                    if selected_display != "Select..." and st.button("Assign All", type="primary", width="stretch"):
+                        # Extract email from selection
+                        selected_email = selected_display.split('(')[-1].replace(')', '')
                         orphan_ids = [s["student_id"] for s in orphans]
-                        result = bulk_assign_students(orphan_ids, bulk_teacher)
-                        st.success(f"Assigned {result['students_assigned']} students to {bulk_teacher}")
+                        result = bulk_assign_students(orphan_ids, selected_email)
+                        st.success(f"Assigned {result['students_assigned']} students to {selected_display}")
                         st.rerun()
         else:
             st.success("All students are assigned to a teacher.")

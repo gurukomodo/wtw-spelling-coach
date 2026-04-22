@@ -244,9 +244,39 @@ def fix_all_teacher_ids():
 # ============================================================
 
 def register_teacher(teacher_id, teacher_name):
-    """Registers a new teacher."""
-    save_teacher_settings(teacher_id, "")
+    """Registers a new teacher with name and email."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create teacher_settings table if not exists (with name column)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS teacher_settings (
+            teacher_id TEXT PRIMARY KEY,
+            teacher_name TEXT,
+            unit_description TEXT
+        )
+    ''')
+    
+    # Save teacher with name
+    cursor.execute('''
+        INSERT OR REPLACE INTO teacher_settings (teacher_id, teacher_name, unit_description)
+        VALUES (?, ?, '')
+    ''', (teacher_id, teacher_name))
+    
+    conn.commit()
+    conn.close()
     return True
+
+def get_teacher_name(teacher_id):
+    """Returns the teacher's name given their email/id."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT teacher_name FROM teacher_settings WHERE teacher_id = ?', (teacher_id,))
+    result = cursor.fetchone()
+    conn.close()
+    if result and result[0]:
+        return result[0]
+    return teacher_id.split('@')[0]  # Fallback to email prefix
 
 def save_teacher_settings(teacher_id, description):
     conn = sqlite3.connect(DB_PATH)
@@ -401,19 +431,17 @@ def assign_unowned_students(teacher_id):
 # ============================================================
 
 def get_all_teachers():
-    """Returns all registered teacher emails."""
+    """Returns all registered teacher emails with names."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT DISTINCT teacher_id FROM (
-            SELECT teacher_id FROM student_identity
-            UNION
-            SELECT teacher_id FROM teacher_settings
-        ) WHERE teacher_id IS NOT NULL AND teacher_id != '' AND teacher_id != 'orphaned'
+        SELECT teacher_id, teacher_name FROM teacher_settings
+        WHERE teacher_id IS NOT NULL AND teacher_id != ''
+        ORDER BY teacher_name
     ''')
-    results = [row[0] for row in cursor.fetchall()]
+    results = cursor.fetchall()
     conn.close()
-    return results
+    return [{"email": row[0], "name": row[1] or row[0].split('@')[0]} for row in results]
 
 # ============================================================
 # ORPHANED STUDENTS
@@ -876,43 +904,56 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
     """
     Saves a new assessment record.
     AUTO-CREATES student_identity entry if student is new.
-    Uses student_name as the internal link to prevent None errors.
-
+    ALWAYS links student to the current teacher (no orphans).
+    
     Args:
         data: assessment data object with student_id, scores, etc.
         raw_text: raw transcription
         teacher_refinement: refined notes
         struggling_words: struggling words
-        teacher_id: current teacher's email (auto-creates identity if needed)
+        teacher_id: current teacher's email (required for linking)
     """
+    if not teacher_id:
+        raise ValueError("teacher_id is required to save assessment")
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     suggested_str = ", ".join(data.suggested_next_groups) if data.suggested_next_groups else ""
 
+    # Extract real name from the data object or student_id
+    real_name = getattr(data, 'real_name', None) or data.student_id
+
     # Check if student exists in identity table
-    cursor.execute('SELECT teacher_id FROM student_identity WHERE student_id = ?', (data.student_id,))
+    cursor.execute('SELECT teacher_id, real_name FROM student_identity WHERE student_id = ?', (data.student_id,))
     result = cursor.fetchone()
 
     if result:
-        # Student exists - use their current teacher
-        current_teacher_id = result[0] if result[0] else teacher_id
+        existing_teacher, existing_name = result
+        # Student exists - update teacher if orphaned or different
+        if not existing_teacher or existing_teacher != teacher_id:
+            cursor.execute('UPDATE student_identity SET teacher_id = ? WHERE student_id = ?',
+                         (teacher_id, data.student_id))
+            print(f"Linked student {data.student_id} to teacher {teacher_id}")
+        # Update real_name if it was a placeholder
+        if existing_name != real_name and real_name != data.student_id:
+            cursor.execute('UPDATE student_identity SET real_name = ? WHERE student_id = ?',
+                         (real_name, data.student_id))
     else:
-        # NEW STUDENT - auto-create identity entry
-        current_teacher_id = teacher_id
-        pseudonym = generate_pseudonym(teacher_id, data.student_id) if teacher_id else None
-
-        # Extract real name from student_id if it looks like a real name
-        real_name = data.student_id
-        # If student_id is generated (STU_xxxx), use it as both id and name temporarily
-        if data.student_id.startswith('STU_'):
-            real_name = f"Student_{data.student_id.split('_')[1]}"
-
+        # NEW STUDENT - create identity entry with current teacher
+        pseudonym = generate_pseudonym(teacher_id, data.student_id)
+        
+        # Use real_name if provided, otherwise derive from student_id
+        if real_name == data.student_id:
+            # If student_id looks like a generated ID, use email prefix as placeholder
+            if data.student_id.startswith('STU_') or data.student_id.startswith('STU'):
+                real_name = f"Student_{data.student_id.split('_')[-1]}"
+        
         cursor.execute('''
             INSERT INTO student_identity (teacher_id, student_id, real_name, pseudonym)
             VALUES (?, ?, ?, ?)
         ''', (teacher_id, data.student_id, real_name, pseudonym))
-        print(f"Auto-created identity for {data.student_id}")
+        print(f"Created identity for {data.student_id} linked to {teacher_id}")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -925,7 +966,7 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
             teacher_notes, teacher_refined_notes, struggling_words
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        data.student_id, current_teacher_id, datetime.now().strftime("%Y-%m-%d"), now, raw_text,
+        data.student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, raw_text,
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
         data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
@@ -1185,32 +1226,8 @@ def factory_reset():
         conn.close()
 
 def get_all_teachers():
-    """Returns a list of registered teacher emails, checking for column name variations."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        # Get column names for the table
-        cursor.execute("PRAGMA table_info(teacher_settings)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        # Determine which column to use
-        target_col = None
-        for col in ['email', 'teacher_email', 'username']:
-            if col in columns:
-                target_col = col
-                break
-        
-        if target_col:
-            cursor.execute(f"SELECT {target_col} FROM teacher_settings")
-            teachers = [row[0] for row in cursor.fetchall()]
-            return teachers
-        else:
-            return []
-    except Exception as e:
-        print(f"Error fetching teachers: {e}")
-        return []
-    finally:
-        conn.close()
+    # Alias without underscores for backwards compatibility
+    return get_all_teachers_list()
 
 def allocate_student_to_teacher(student_name, teacher_email):
     """Links a student name to a specific teacher across all tables."""
