@@ -19,7 +19,7 @@ from database_manager import (
     get_orphaned_students, get_all_students_with_status, get_teacher_student_status,
     get_raw_assessments, generate_class_groups, get_latest_teacher_notes, get_struggling_words,
     get_student_id_by_name, save_student_identity, get_student_name, get_pseudonym,
-    generate_pseudonym, save_assessment, get_name_for_id
+    generate_pseudonym, save_assessment, save_ai_report, get_name_for_id
 )
 
 # =============================================================================
@@ -307,7 +307,7 @@ def display_teacher_class():
     # Show student cards with AI coaching buttons
     for student in teacher_students_list:
         with st.container():
-            col1, col2, col3 = st.columns([2, 1, 1])
+            col1, col2 = st.columns([2, 1])
             
             current_student_name = student['name']
 
@@ -318,12 +318,6 @@ def display_teacher_class():
             with col2:
                 g_val = student.get('current_g_level', 'N/A')
                 st.metric("Current G-Level", g_val.split(',')[0] if g_val else "N/A")
-            
-            with col3:
-                struggled = student.get('most_struggled_word', "N/A")
-                if ':' in struggled:
-                    struggled = struggled.split(':')[0]
-                st.metric("Most Struggled", struggled[:20] if struggled else "N/A")
 
             # AI Coaching button for each student
             if st.button(f"Generate AI Coach Report for {current_student_name}", key=f"ai_{current_student_name}"):
@@ -331,12 +325,55 @@ def display_teacher_class():
                     # Get full history as list for holistic AI analysis
                     history = get_student_history(student['student_id'], teacher_id=teacher_id, admin=False)
                     from spelling_logic import get_ai_coaching_report
-                    report = get_ai_coaching_report(
+                    raw_report = get_ai_coaching_report(
                         student_alias=student['pseudonym'], 
                         g_level=student.get('current_g_level', 'N/A'), 
                         history=history
                     )
-                    st.info(report)
+                    # Store raw report in session state for editing
+                    st.session_state[f'raw_report_{current_student_name}'] = raw_report
+                    st.session_state[f'edit_mode_{current_student_name}'] = True
+                    st.rerun()
+            
+            # Display editable report if in edit mode
+            edit_key = f'edit_mode_{current_student_name}'
+            if st.session_state.get(edit_key, False):
+                raw_report = st.session_state.get(f'raw_report_{current_student_name}', '')
+                
+                st.markdown("---*")
+                st.subheader(f"AI Coaching Report for {current_student_name}")
+                st.caption("Review and edit the AI's suggestions before saving.")
+                
+                # Editable text area for the report
+                edited_report = st.text_area(
+                    "Coach Report (editable)",
+                    value=raw_report,
+                    height=300,
+                    key=f'report_editor_{current_student_name}'
+                )
+                
+                # Confirm and Save Report button
+                col_save1, col_save2 = st.columns([1, 4])
+                with col_save1:
+                    if st.button("Confirm & Save Report", key=f'save_report_{current_student_name}', type="primary"):
+                        if edited_report.strip():
+                            # Save the edited report as part of the assessment
+                            from database_manager import save_ai_report
+                            save_ai_report(
+                                student_id=student['student_id'],
+                                teacher_id=teacher_id,
+                                report_content=edited_report
+                            )
+                            st.success(f"Report saved for {current_student_name}!")
+                            st.session_state[edit_key] = False
+                            st.rerun()
+                        else:
+                            st.warning("Report cannot be empty.")
+                with col_save2:
+                    if st.button("Discard", key=f'discard_report_{current_student_name}'):
+                        st.session_state[edit_key] = False
+                        st.rerun()
+                st.markdown("---*")
         
         st.divider()
 

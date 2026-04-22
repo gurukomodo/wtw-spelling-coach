@@ -111,6 +111,11 @@ def repair_schema(cursor):
     if "teacher_observations" not in assess_cols:
         cursor.execute("ALTER TABLE assessments ADD COLUMN teacher_observations TEXT")
         print("Schema Repair: Added teacher_observations column to assessments.")
+    
+    # Add coaching_report column for AI-generated/editable reports
+    if "coaching_report" not in assess_cols:
+        cursor.execute("ALTER TABLE assessments ADD COLUMN coaching_report TEXT")
+        print("Schema Repair: Added coaching_report column to assessments.")
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
@@ -993,6 +998,57 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
         suggested_str, data.teacher_notes, teacher_refinement, struggling_words, teacher_observations
     ))
 
+    conn.commit()
+    conn.close()
+    return True
+
+def save_ai_report(student_id, teacher_id, report_content):
+    """
+    Saves or updates an AI coaching report for a student.
+    This is stored as the latest coaching_report in the assessments table.
+    """
+    if not student_id or not teacher_id:
+        raise ValueError("student_id and teacher_id are required")
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Insert a new record for the coaching report (links to the student's latest assessment)
+    # First, get the student's current G-level from latest assessment
+    cursor.execute('''
+        SELECT g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, g4_vowel_teams,
+               g5_r_controlled, g6_clusters, g7_multisyllabic, g8_reduction, suggested_next
+        FROM assessments WHERE student_id = ? ORDER BY created_at DESC LIMIT 1
+    ''', (student_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        # Update the latest assessment with the coaching report
+        cursor.execute('''
+            UPDATE assessments 
+            SET coaching_report = ?
+            WHERE student_id = ? AND created_at = (
+                SELECT MAX(created_at) FROM assessments WHERE student_id = ?
+            )
+        ''', (report_content, student_id, student_id))
+    else:
+        # No existing assessment - create a minimal coaching report record
+        cursor.execute('''
+            INSERT INTO assessments (
+                student_id, teacher_id, test_date, created_at, raw_transcription,
+                g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e, g4_vowel_teams,
+                g5_r_controlled, g6_clusters, g7_multisyllabic, g8_reduction,
+                suggested_next, teacher_notes, teacher_refined_notes, struggling_words, 
+                teacher_observations, coaching_report
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now,
+            "AI Coaching Report Only", 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            "", "", report_content, "", "", report_content
+        ))
+    
     conn.commit()
     conn.close()
     return True
