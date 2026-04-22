@@ -4,13 +4,18 @@ from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List
-from database_manager import get_latest_teacher_notes, get_struggling_words
 import google.generativeai as genai
 import streamlit as st
 
-# Setup the API
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-pro')
+# Setup the API with correct configuration
+api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+# Configure the SDK
+genai.configure(api_key=api_key)
+
+# Use the latest stable model
+# Options: gemini-1.5-pro-latest, gemini-1.5-flash-latest, gemini-2.0-flash-exp
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 def get_ai_coaching_report(student_alias, g_level, history=None):
     """
