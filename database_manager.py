@@ -57,6 +57,15 @@ def init_db():
         )
     ''')
     
+    # Test Templates table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS test_templates (
+            test_id TEXT PRIMARY KEY,
+            test_name TEXT NOT NULL,
+            intended_words TEXT NOT NULL
+        )
+    ''')
+    
     # Commit after table creation
     conn.commit()
 
@@ -116,6 +125,82 @@ def repair_schema(cursor):
     if "coaching_report" not in assess_cols:
         cursor.execute("ALTER TABLE assessments ADD COLUMN coaching_report TEXT")
         print("Schema Repair: Added coaching_report column to assessments.")
+    
+    # Add test_template column for tracking which template was used
+    if "test_template" not in assess_cols:
+        cursor.execute("ALTER TABLE assessments ADD COLUMN test_template TEXT")
+        print("Schema Repair: Added test_template column to assessments.")
+    
+    # Ensure test_templates table exists and has default data
+    try:
+        cursor.execute("SELECT COUNT(*) FROM test_templates")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            # Insert default Standard Diagnostic test
+            default_words = "cat,bed,sit,run,fish,ship,sled,stick,shine,flash,grape,slide,plane,bone,game,cube,tube,brake,plant,string,cream,street,float,toast,boot,talk,car,far,star,start,spark,bird,burn,turn,fern,paint,wait,train,day,play,rain,tail,sail,boat,coat,goal"
+            cursor.execute('''
+                INSERT INTO test_templates (test_id, test_name, intended_words)
+                VALUES (?, ?, ?)
+            ''', ('default_standard', 'Standard Diagnostic', default_words))
+            print("Schema Repair: Added default test template.")
+    except:
+        pass  # Table doesn't exist yet, will be created in init_db
+
+# ============================================================
+# TEST TEMPLATES (DIAGNOSTIC TEST LIBRARY)
+# ============================================================
+
+def get_all_test_templates():
+    """Returns all test templates ordered by name."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT test_id, test_name, intended_words 
+        FROM test_templates 
+        ORDER BY test_name
+    ''')
+    results = cursor.fetchall()
+    conn.close()
+    return [{"test_id": row[0], "test_name": row[1], "intended_words": row[2]} for row in results]
+
+def get_test_template(test_id):
+    """Returns a single test template by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT test_id, test_name, intended_words FROM test_templates WHERE test_id = ?', (test_id,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return {"test_id": result[0], "test_name": result[1], "intended_words": result[2]}
+    return None
+
+def save_test_template(test_id, test_name, intended_words):
+    """Saves or updates a test template."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO test_templates (test_id, test_name, intended_words)
+        VALUES (?, ?, ?)
+    ''', (test_id, test_name, intended_words))
+    conn.commit()
+    conn.close()
+    return True
+
+def delete_test_template(test_id):
+    """Deletes a test template."""
+    if test_id == 'default_standard':
+        return False, "Cannot delete the default test template."
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM test_templates WHERE test_id = ?', (test_id,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    
+    if deleted > 0:
+        return True, f"Deleted {deleted} template(s)."
+    return False, "Template not found."
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
@@ -924,7 +1009,7 @@ def get_mastered_words_from_raw(raw_text, word_list=None):
 
     return ", ".join(mastered) if mastered else ""
 
-def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None, teacher_id=None, teacher_observations=None):
+def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None, teacher_id=None, teacher_observations=None, test_template=None):
     """
     Saves a new assessment record.
     AUTO-CREATES student_identity entry if student is new.
@@ -937,6 +1022,7 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
         struggling_words: struggling words
         teacher_id: current teacher's email (required for linking)
         teacher_observations: context/notes from teacher about the session
+        test_template: the test template ID used for this assessment
     """
     if not teacher_id:
         raise ValueError("teacher_id is required to save assessment")
@@ -988,14 +1074,16 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations,
+            test_template
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         data.student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, raw_text,
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
         data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
-        suggested_str, data.teacher_notes, teacher_refinement, struggling_words, teacher_observations
+        suggested_str, data.teacher_notes, teacher_refinement, struggling_words, teacher_observations,
+        test_template
     ))
 
     conn.commit()

@@ -245,7 +245,7 @@ def run_scoring_crew(student_name, transcription_text):
     return crew.kickoff()
     return result
 '''
-def run_scoring_crew(student_id, transcription_text):
+def run_scoring_crew(student_id, transcription_text, intended_words=None):
     """
     Runs the AI scoring crew for a student's transcription.
     PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
@@ -253,7 +253,11 @@ def run_scoring_crew(student_id, transcription_text):
     Args:
         student_id: Internal student ID (never shown to AI)
         transcription_text: The student's spelling attempts
+        intended_words: Optional comma-separated list of target words (from test template)
     """
+    # Use provided words or fall back to global default
+    target_words = intended_words if intended_words else CURRENT_TEST_WORDS
+    
     # PRIVACY: Always use 'The Student' alias in AI prompts
     student_alias = "The Student"
     
@@ -268,7 +272,7 @@ def run_scoring_crew(student_id, transcription_text):
     Analyze the following spelling attempts for {student_alias}:
     {transcription_text}
     
-    Compare them to: {CURRENT_TEST_WORDS}
+    Compare them to: {target_words}
 
     STRICT RULES:
     - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 

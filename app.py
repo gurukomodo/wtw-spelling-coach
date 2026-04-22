@@ -19,7 +19,8 @@ from database_manager import (
     get_orphaned_students, get_all_students_with_status, get_teacher_student_status,
     get_raw_assessments, generate_class_groups, get_latest_teacher_notes, get_struggling_words,
     get_student_id_by_name, save_student_identity, get_student_name, get_pseudonym,
-    generate_pseudonym, save_assessment, save_ai_report, get_name_for_id
+    generate_pseudonym, save_assessment, save_ai_report, get_name_for_id,
+    get_all_test_templates, get_test_template
 )
 
 # =============================================================================
@@ -741,6 +742,28 @@ def display_assessment_form():
     student_id = st.session_state.get('current_student_id')
     student_name = st.session_state.get('current_student_name', 'Student')
     
+    # Test Template Selector
+    st.subheader("Select Test Template")
+    templates = get_all_test_templates()
+    template_options = {t['test_name']: t for t in templates}
+    
+    if 'selected_test_template' not in st.session_state:
+        st.session_state.selected_test_template = templates[0]['test_name'] if templates else None
+    
+    selected_template_name = st.selectbox(
+        "Choose a diagnostic test:",
+        options=list(template_options.keys()),
+        key="test_template_selector"
+    )
+    
+    if selected_template_name:
+        st.session_state.selected_test_template = selected_template_name
+        selected_template = template_options[selected_template_name]
+        word_count = len(selected_template['intended_words'].split(','))
+        st.caption(f"Selected: {word_count} words | ID: {selected_template['test_id']}")
+    
+    st.divider()
+    
     uploaded_file = st.file_uploader(" Step 1: Upload Test Photo", type=["jpg", "jpeg", "png"])
 
     # Pre-process & Layout
@@ -774,7 +797,12 @@ def display_assessment_form():
             else:
                 with st.spinner(f"Analyzing {student_name}..."):
                     st.session_state.edited_transcription = edited_text
-                    result = run_scoring_crew(student_id, edited_text)
+                    
+                    # Get intended words from selected template
+                    selected_template = template_options.get(selected_template_name)
+                    intended_words = selected_template['intended_words'] if selected_template else None
+                    
+                    result = run_scoring_crew(student_id, edited_text, intended_words=intended_words)
                     
                     if result is None:
                         st.error("The AI returned nothing. Check your internet or API key.")
@@ -905,9 +933,13 @@ def display_assessment_form():
             struggling_words = st.session_state.get("struggling_words_input", "")
             teacher_observations = st.session_state.get("teacher_observations_input", "")
             current_teacher_id = st.session_state.get("email")
+            
+            # Get test template info
+            test_template = selected_template.get('test_id') if selected_template else None
+            
             save_assessment(save_obj, edited_text, teacher_refinement=final_notes, 
                         struggling_words=struggling_words, teacher_id=current_teacher_id,
-                        teacher_observations=teacher_observations)
+                        teacher_observations=teacher_observations, test_template=test_template)
             
             st.success(f" Final assessment for {student_name} has been saved!")
             st.rerun()
@@ -1097,6 +1129,73 @@ def display_admin_page():
                             else:
                                 st.info(f"No changes needed.")
                             st.rerun()
+    
+    st.markdown("---")
+    
+    # Test Templates Management
+    with st.expander(" Manage Test Templates", expanded=False):
+        st.subheader("Test Library")
+        st.caption("Create and manage diagnostic test templates.")
+        
+        from database_manager import get_all_test_templates, save_test_template, delete_test_template
+        
+        # Form to add/edit test template
+        with st.form("test_template_form", clear_on_submit=True):
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                test_id_input = st.text_input("Test ID", placeholder="e.g., g2_digraphs_v1", help="Unique identifier for this test")
+            with col2:
+                test_name_input = st.text_input("Test Name", placeholder="e.g., G2 Digraphs Assessment")
+            
+            intended_words_input = st.text_area(
+                "Intended Words (comma-separated)",
+                height=100,
+                placeholder="e.g., ship, shed, fish, dish, rush, mash, wish, cash, flash"
+            )
+            
+            col_btn1, col_btn2 = st.columns([1, 4])
+            with col_btn1:
+                submitted = st.form_submit_button("Save Template", type="primary")
+            
+            if submitted:
+                if test_id_input and test_name_input and intended_words_input:
+                    # Generate slug from name if ID is empty
+                    template_id = test_id_input.strip() if test_id_input.strip() else test_name_input.lower().replace(' ', '_')[:20]
+                    save_test_template(template_id, test_name_input.strip(), intended_words_input.strip())
+                    st.success(f"Saved template: {test_name_input}")
+                    st.rerun()
+                else:
+                    st.error("Please fill in all fields.")
+        
+        st.markdown("---")
+        st.subheader("Available Templates")
+        
+        templates = get_all_test_templates()
+        if templates:
+            for t in templates:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 3, 1])
+                    with col1:
+                        st.markdown(f"**{t['test_name']}**")
+                        st.caption(f"ID: {t['test_id']} | {len(t['intended_words'].split(','))} words")
+                    with col2:
+                        words_preview = ', '.join(t['intended_words'].split(',')[:5])
+                        if len(t['intended_words'].split(',')) > 5:
+                            words_preview += '...'
+                        st.caption(words_preview)
+                    with col3:
+                        if t['test_id'] != 'default_standard':
+                            if st.button("Delete", key=f"del_template_{t['test_id']}"):
+                                success, msg = delete_test_template(t['test_id'])
+                                if success:
+                                    st.success(msg)
+                                else:
+                                    st.error(msg)
+                                st.rerun()
+                        else:
+                            st.caption("Default")
+        else:
+            st.info("No test templates found.")
     
     st.markdown("---")
     
