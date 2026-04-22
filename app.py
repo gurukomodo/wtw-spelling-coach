@@ -159,7 +159,10 @@ def practice_lists_to_table(practice_lists):
 # INITIALIZE SESSION STATE
 # =============================================================================
 def initialize_session_state():
-    """Initialize all session state variables."""
+    """Initialize all session state variables and database."""
+    # Initialize database first - must happen before any DB queries
+    init_db()
+    
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     
@@ -202,11 +205,14 @@ def main():
 # PAGE: REGISTRATION
 # =============================================================================
 def show_registration_page():
+    # Ensure database is initialized before any queries
+    init_db()
+    
     st.title("Welcome to Un.Box.Ed.")
     
     # 1. Get existing teachers from the database
-    from database_manager import get_all_teachers # You may need to add this to database_manager.py
-    existing_teachers = get_all_teachers() # Should return a list of dictionaries/tuples
+    from database_manager import get_all_teachers
+    existing_teachers = get_all_teachers()
     
     col1, col2 = st.columns(2)
 

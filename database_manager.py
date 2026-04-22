@@ -19,6 +19,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             student_id TEXT,
             teacher_id TEXT,
+            teacher_name TEXT,
             test_date DATE,
             created_at DATETIME,
             raw_transcription TEXT,
@@ -51,9 +52,13 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS teacher_settings (
             teacher_id TEXT PRIMARY KEY,
+            teacher_name TEXT,
             unit_description TEXT
         )
     ''')
+    
+    # Commit after table creation
+    conn.commit()
 
     # 2. Schema Repair / Migration
     repair_schema(cursor)
@@ -89,6 +94,13 @@ def repair_schema(cursor):
     if "pseudonym" not in identity_cols:
         cursor.execute("ALTER TABLE student_identity ADD COLUMN pseudonym TEXT")
         print("Schema Repair: Added pseudonym column.")
+    
+    # Add teacher_name column to teacher_settings if missing
+    cursor.execute("PRAGMA table_info(teacher_settings)")
+    settings_cols = [col[1] for col in cursor.fetchall()]
+    if "teacher_name" not in settings_cols:
+        cursor.execute("ALTER TABLE teacher_settings ADD COLUMN teacher_name TEXT")
+        print("Schema Repair: Added teacher_name column to teacher_settings.")
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
@@ -1224,10 +1236,6 @@ def factory_reset():
         return False, f"Reset failed: {str(e)}"
     finally:
         conn.close()
-
-def get_all_teachers():
-    # Alias without underscores for backwards compatibility
-    return get_all_teachers_list()
 
 def allocate_student_to_teacher(student_name, teacher_email):
     """Links a student name to a specific teacher across all tables."""
