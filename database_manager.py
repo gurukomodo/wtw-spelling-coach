@@ -104,6 +104,13 @@ def repair_schema(cursor):
     if "teacher_name" not in settings_cols:
         cursor.execute("ALTER TABLE teacher_settings ADD COLUMN teacher_name TEXT")
         print("Schema Repair: Added teacher_name column to teacher_settings.")
+    
+    # Add teacher_observations column to assessments if missing
+    cursor.execute("PRAGMA table_info(assessments)")
+    assess_cols = [col[1] for col in cursor.fetchall()]
+    if "teacher_observations" not in assess_cols:
+        cursor.execute("ALTER TABLE assessments ADD COLUMN teacher_observations TEXT")
+        print("Schema Repair: Added teacher_observations column to assessments.")
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
@@ -646,7 +653,7 @@ def import_from_csv(teacher_email=None):
 # ============================================================
 
 def get_student_history(student_id, teacher_id=None, admin=False):
-    """Fetches all historical assessments for a student."""
+    """Fetches all historical assessments for a student, ordered oldest to newest."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -656,10 +663,10 @@ def get_student_history(student_id, teacher_id=None, admin=False):
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words
+            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations
         FROM assessments
         WHERE student_id = ?
-        ORDER BY created_at DESC
+        ORDER BY created_at ASC
     ''', (student_id,))
     results = cursor.fetchall()
     conn.close()
@@ -912,7 +919,7 @@ def get_mastered_words_from_raw(raw_text, word_list=None):
 
     return ", ".join(mastered) if mastered else ""
 
-def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None, teacher_id=None):
+def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=None, teacher_id=None, teacher_observations=None):
     """
     Saves a new assessment record.
     AUTO-CREATES student_identity entry if student is new.
@@ -924,6 +931,7 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
         teacher_refinement: refined notes
         struggling_words: struggling words
         teacher_id: current teacher's email (required for linking)
+        teacher_observations: context/notes from teacher about the session
     """
     if not teacher_id:
         raise ValueError("teacher_id is required to save assessment")
@@ -975,14 +983,14 @@ def save_assessment(data, raw_text, teacher_refinement=None, struggling_words=No
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         data.student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, raw_text,
         data.g0_phonemic_awareness, data.g1_cvc_mapping, data.g2_digraphs,
         data.g3_silent_e, data.g4_vowel_teams, data.g5_r_controlled,
         data.g6_clusters, data.g7_multisyllabic, data.g8_reduction_morphology,
-        suggested_str, data.teacher_notes, teacher_refinement, struggling_words
+        suggested_str, data.teacher_notes, teacher_refinement, struggling_words, teacher_observations
     ))
 
     conn.commit()

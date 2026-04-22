@@ -12,23 +12,74 @@ import streamlit as st
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-pro')
 
-def get_ai_coaching_report(student_alias, g_level, errors):
+def get_ai_coaching_report(student_alias, g_level, history=None):
     """
-    Sends anonymized error data to Gemini and returns a coaching plan.
+    Sends holistic student history to Gemini and returns a coaching plan.
+    Reviews the provided history (ordered oldest to newest) to identify patterns.
     """
-    prompt = f"""
-    You are an expert Literacy Coach. 
-    Analyze the spelling performance of '{student_alias}'.
-    Current G-Level: {g_level}
-    Specific Errors: {errors}
-
-    Please provide:
-    1. A 'Diagnostic Insight' (What phonetic patterns are they missing?)
-    2. Three 'Targeted Activities' for the teacher to use this week.
-    3. A 'Next Step' recommendation.
+    # Build history context from list of assessments
+    history_context = "No previous assessments."
+    recent_context = ""
     
-    Keep the tone professional, encouraging, and concise.
-    """
+    if history and len(history) > 0:
+        history_entries = []
+        for i, entry in enumerate(history):
+            # entry format: [id, student_id, teacher_id, test_date, created_at,
+            #                g0, g1, g2, g3, g4, g5, g6, g7, g8, suggested_next,
+            #                teacher_notes, teacher_refined_notes, struggling_words, teacher_observations]
+            test_date = entry[4] if entry[4] else f"Assessment {i+1}"
+            g_scores = f"G0:{entry[6] or 0}%, G1:{entry[7] or 0}%, G2:{entry[8] or 0}%, G3:{entry[9] or 0}%, G4:{entry[10] or 0}%, G5:{entry[11] or 0}%, G6:{entry[12] or 0}%, G7:{entry[13] or 0}%, G8:{entry[14] or 0}%"
+            struggles = entry[17] if entry[17] else ""
+            notes = entry[15] if entry[15] else ""
+            observations = entry[18] if entry[18] else ""
+            
+            entry_str = f"--- {test_date[:10]} ---\nScores: {g_scores}\n"
+            if struggles:
+                entry_str += f"Struggles: {struggles}\n"
+            if observations:
+                entry_str += f"Teacher Notes: {observations}\n"
+            if notes:
+                entry_str += f"AI Analysis: {notes}\n"
+            
+            history_entries.append(entry_str)
+        
+        history_context = "\n\n".join(history_entries)
+        
+        # Recent context for priority weighting
+        recent = history[-2:] if len(history) >= 2 else history
+        recent_entries = []
+        for entry in recent:
+            struggles = entry[17] if entry[17] else ""
+            observations = entry[18] if entry[18] else ""
+            if struggles or observations:
+                recent_entries.append(f"Recent: {struggles} | Notes: {observations}")
+        recent_context = "\n".join(recent_entries) if recent_entries else ""
+    
+    prompt = f"""
+You are an Un.Box.Ed. coach analyzing a student's spelling trajectory.
+
+Student: '{student_alias}'
+Current G-Level: {g_level}
+
+=== FULL ASSESSMENT HISTORY (Oldest to Newest) ===
+{history_context}
+
+=== RECENT ENTRIES (Higher Priority) ===
+{recent_context}
+
+Based on this holistic review:
+1. Identify persistent phonetic struggles (patterns appearing across multiple assessments)
+2. Note any improvements or regression
+3. Factor in teacher observations for context
+
+Provide a coaching report with:
+1. **Diagnostic Insight**: What phonetic patterns are they consistently missing?
+2. **Progress Analysis**: How has their trajectory changed over time?
+3. **Three Targeted Activities**: Specific practice for this week
+4. **Next Step Recommendation**: Clear direction for continued growth
+
+Keep the tone professional, encouraging, and actionable.
+"""
     
     try:
         response = model.generate_content(prompt)

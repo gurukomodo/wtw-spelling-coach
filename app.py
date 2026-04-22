@@ -328,12 +328,13 @@ def display_teacher_class():
             # AI Coaching button for each student
             if st.button(f"Generate AI Coach Report for {current_student_name}", key=f"ai_{current_student_name}"):
                 with st.spinner(f"Consulting AI about {student['pseudonym']}..."):
-                    history = get_anonymized_history(current_student_name)
+                    # Get full history as list for holistic AI analysis
+                    history = get_student_history(student['student_id'], teacher_id=teacher_id, admin=False)
                     from spelling_logic import get_ai_coaching_report
                     report = get_ai_coaching_report(
                         student_alias=student['pseudonym'], 
                         g_level=student.get('current_g_level', 'N/A'), 
-                        errors=history.get('error_list', 'No errors recorded')
+                        history=history
                     )
                     st.info(report)
         
@@ -468,6 +469,18 @@ def display_assessment_form():
             "Enter words the student consistently spells correctly",
             placeholder="e.g., cat, bed, sit, run",
             key="mastered_words_input"
+        )
+        
+        st.divider()
+        
+        # Teacher Observations (for this specific session)
+        st.write("Teacher Observations/Context")
+        st.caption("Add notes about this student or session for future reference.")
+        teacher_observations_input = st.text_area(
+            "Session context, behaviors, environmental factors...",
+            height=80,
+            placeholder="e.g., 'Was tired today', 'Good progress on G2 digraphs', 'Needs visual aids'",
+            key="teacher_observations_input"
         )
         
         # Save Student Data
@@ -853,9 +866,11 @@ def display_assessment_form():
             save_obj.g8_reduction_morphology = g_scores["g8"]
 
             struggling_words = st.session_state.get("struggling_words_input", "")
+            teacher_observations = st.session_state.get("teacher_observations_input", "")
             current_teacher_id = st.session_state.get("email")
             save_assessment(save_obj, edited_text, teacher_refinement=final_notes, 
-                        struggling_words=struggling_words, teacher_id=current_teacher_id)
+                        struggling_words=struggling_words, teacher_id=current_teacher_id,
+                        teacher_observations=teacher_observations)
             
             st.success(f" Final assessment for {student_name} has been saved!")
             st.rerun()
