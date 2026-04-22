@@ -71,10 +71,13 @@ def repair_schema(cursor):
     cursor.execute("PRAGMA table_info(assessments)")
     columns = [col[1] for col in cursor.fetchall()]
 
-    if "student_name" in columns and "student_id" not in columns:
-        cursor.execute("ALTER TABLE assessments ADD COLUMN student_id TEXT")
-        cursor.execute("UPDATE assessments SET student_id = student_name")
-        print("Schema Repair: Migrated student_name to student_id.")
+    # Migrate student_name to student_id if needed
+    if "student_name" in columns:
+        if "student_id" not in columns:
+            cursor.execute("ALTER TABLE assessments ADD COLUMN student_id TEXT")
+            cursor.execute("UPDATE assessments SET student_id = student_name")
+            print("Schema Repair: Migrated student_name to student_id.")
+        # student_name can remain but won't be used going forward
 
     if "struggling_words" not in columns:
         cursor.execute("ALTER TABLE assessments ADD COLUMN struggling_words TEXT")
@@ -88,7 +91,7 @@ def repair_schema(cursor):
         cursor.execute("ALTER TABLE assessments ADD COLUMN teacher_id TEXT")
         print("Schema Repair: Added teacher_id column to assessments.")
 
-    # Add pseudonym column if missing
+    # Add pseudonym column if missing in student_identity
     cursor.execute("PRAGMA table_info(student_identity)")
     identity_cols = [col[1] for col in cursor.fetchall()]
     if "pseudonym" not in identity_cols:
@@ -154,21 +157,17 @@ def get_student_id_from_pseudonym(teacher_id, pseudonym):
 def sync_identity_from_assessments():
     """
     Syncs student_identity from assessments.
-    Handles student_id AND student_name columns.
+    Uses student_id column only (student_name has been deprecated).
     Creates pseudonyms automatically.
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Get ALL unique students from assessments
+    # Get ALL unique students from assessments using student_id only
     cursor.execute('''
-        SELECT DISTINCT
-            COALESCE(NULLIF(student_id, ''), student_name) as identifier,
-            MAX(student_name) as raw_name
+        SELECT DISTINCT student_id, student_id as raw_name
         FROM assessments
-        WHERE COALESCE(NULLIF(student_id, ''), student_name) IS NOT NULL
-        AND COALESCE(NULLIF(student_id, ''), student_name) != ''
-        GROUP BY identifier
+        WHERE student_id IS NOT NULL AND student_id != ''
     ''')
     assessment_students = cursor.fetchall()
 
@@ -176,7 +175,8 @@ def sync_identity_from_assessments():
     for identifier, raw_name in assessment_students:
         cursor.execute('SELECT 1 FROM student_identity WHERE student_id = ?', (identifier,))
         if not cursor.fetchone():
-            display_name = raw_name if raw_name and raw_name != identifier else identifier
+            # Use identifier as both id and name (will be updated later with real name)
+            display_name = identifier
             try:
                 # Insert as orphan - no teacher assigned yet
                 cursor.execute('''
@@ -1237,18 +1237,24 @@ def factory_reset():
     finally:
         conn.close()
 
-def allocate_student_to_teacher(student_name, teacher_email):
-    """Links a student name to a specific teacher across all tables."""
+def allocate_student_to_teacher(student_identifier, teacher_email):
+    """Links a student (by student_id or real_name) to a specific teacher."""
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Update identity table
-        cursor.execute("UPDATE student_identity SET teacher_id = ? WHERE student_name = ?", (teacher_email, student_name))
+        # First try to find by student_id, then by real_name
+        cursor.execute("UPDATE student_identity SET teacher_id = ? WHERE student_id = ? OR real_name = ?", 
+                       (teacher_email, student_identifier, student_identifier))
+        rows_updated_identity = cursor.rowcount
+        
         # Update assessments table
-        cursor.execute("UPDATE assessments SET teacher_id = ? WHERE student_name = ?", (teacher_email, student_name))
+        cursor.execute("UPDATE assessments SET teacher_id = ? WHERE student_id = ?", 
+                       (teacher_email, student_identifier))
+        rows_updated_assessments = cursor.rowcount
+        
         conn.commit()
-        return True
-    except:
-        return False
+        return True, f"Updated {rows_updated_identity} identity rows, {rows_updated_assessments} assessment rows"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
     finally:
         conn.close()
