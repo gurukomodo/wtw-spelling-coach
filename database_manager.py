@@ -174,14 +174,18 @@ def get_test_template(test_id):
         return {"test_id": result[0], "test_name": result[1], "intended_words": result[2]}
     return None
 
-def save_test_template(test_id, test_name, intended_words):
-    """Saves or updates a test template."""
+def save_test_template(name, words, test_id=None):
+    """Saves a new test template. Auto-generates test_id if not provided."""
+    if test_id is None:
+        # Auto-generate test_id from name
+        test_id = name.lower().replace(' ', '_')[:30] + '_' + str(int(datetime.now().timestamp()))
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO test_templates (test_id, test_name, intended_words)
         VALUES (?, ?, ?)
-    ''', (test_id, test_name, intended_words))
+    ''', (test_id, name, words))
     conn.commit()
     conn.close()
     return True
@@ -743,7 +747,8 @@ def import_from_csv(teacher_email=None):
 # ============================================================
 
 def get_student_history(student_id, teacher_id=None, admin=False):
-    """Fetches all historical assessments for a student, ordered oldest to newest."""
+    """Fetches all historical assessments for a student, ordered oldest to newest.
+    Returns a list of dictionaries for easier access."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -753,14 +758,25 @@ def get_student_history(student_id, teacher_id=None, admin=False):
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations
+            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations,
+            coaching_report, test_template
         FROM assessments
         WHERE student_id = ?
         ORDER BY created_at ASC
     ''', (student_id,))
     results = cursor.fetchall()
     conn.close()
-    return results
+    
+    # Convert tuples to list of dictionaries
+    column_names = [
+        'id', 'student_id', 'teacher_id', 'test_date', 'created_at',
+        'g0_phonemic', 'g1_cvc', 'g2_digraphs', 'g3_silent_e',
+        'g4_vowel_teams', 'g5_r_controlled', 'g6_clusters',
+        'g7_multisyllabic', 'g8_reduction', 'suggested_next',
+        'teacher_notes', 'teacher_refined_notes', 'struggling_words', 'teacher_observations',
+        'coaching_report', 'test_template'
+    ]
+    return [dict(zip(column_names, row)) for row in results]
 
 def get_anonymized_history(student_name):
     """
