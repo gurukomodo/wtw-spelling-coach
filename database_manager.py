@@ -447,7 +447,7 @@ def get_all_teachers():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT teacher_id, teacher_name FROM teacher_settings
+        SELECT DISTINCT teacher_id, teacher_name FROM teacher_settings
         WHERE teacher_id IS NOT NULL AND teacher_id != ''
         ORDER BY teacher_name
     ''')

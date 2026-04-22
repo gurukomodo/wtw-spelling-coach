@@ -189,6 +189,9 @@ def initialize_session_state():
 def main():
     """Main router that checks authentication and routes to appropriate page."""
     initialize_session_state()
+
+    # Check for legacy data and migrate it immediately after DB is ready
+    migrate_legacy_profiles()
     
     # Handle URL query params - standardize to use 'email'
     query_params = st.query_params
@@ -205,10 +208,9 @@ def main():
 # PAGE: REGISTRATION
 # =============================================================================
 def show_registration_page():
-    # Ensure database is initialized before any queries
-    init_db()
+
     
-    st.title("Welcome to Un.Box.Ed.")
+    st.title("Welcome to UnBoxEd Spelling Coach!")
     
     # 1. Get existing teachers from the database
     from database_manager import get_all_teachers
@@ -247,7 +249,7 @@ def show_registration_page():
             if submit_button:
                 if new_name and new_email:
                     from database_manager import register_teacher
-                    register_teacher(new_name, new_email)
+                    register_teacher(new_email, new_name)
                     
                     st.session_state.authenticated = True
                     st.session_state.user_name = new_name
@@ -272,8 +274,7 @@ def show_teacher_dashboard():
     # Sidebar navigation using radio buttons
     page = st.sidebar.radio("Navigation", ["My Class", "Add New Assessment", "Admin"])
     
-    # Initialize database and migrate legacy data
-    init_db()
+    # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
     
     # Get current teacher email (standardized)
