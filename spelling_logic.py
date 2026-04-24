@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from typing import List
 import google.generativeai as genai
 import streamlit as st
+from model_config import get_available_model, get_model_fallbacks, set_model_from_env
+from database_manager import get_latest_teacher_notes
 
 # Setup the API with correct configuration
 api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -13,9 +15,29 @@ api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 # Configure the SDK
 genai.configure(api_key=api_key)
 
-# Use the latest stable model
-# Options: gemini-1.5-pro-latest, gemini-1.5-flash-latest, gemini-2.0-flash-exp
-model = genai.GenerativeModel('gemini-1.5-flash-latest')
+# Use configurable model with fallback logic
+def initialize_model():
+    """Initialize model with fallback logic."""
+    # Try environment override first
+    model_name = set_model_from_env()
+    if model_name:
+        try:
+            return genai.GenerativeModel(model_name)
+        except Exception as e:
+            st.warning(f"Model {model_name} not available: {e}")
+    
+    # Try preferred models in order
+    for fallback_model in get_model_fallbacks():
+        try:
+            return genai.GenerativeModel(fallback_model)
+        except Exception as e:
+            continue
+    
+    # If no models work, raise error
+    raise Exception("No available Gemini models found")
+
+# Initialize model globally
+model = initialize_model()
 
 def get_ai_coaching_report(student_alias, g_level, history=None):
     """
@@ -29,14 +51,12 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
     if history and len(history) > 0:
         history_entries = []
         for i, entry in enumerate(history):
-            # entry format: [id, student_id, teacher_id, test_date, created_at,
-            #                g0, g1, g2, g3, g4, g5, g6, g7, g8, suggested_next,
-            #                teacher_notes, teacher_refined_notes, struggling_words, teacher_observations]
-            test_date = entry[4] if entry[4] else f"Assessment {i+1}"
-            g_scores = f"G0:{entry[6] or 0}%, G1:{entry[7] or 0}%, G2:{entry[8] or 0}%, G3:{entry[9] or 0}%, G4:{entry[10] or 0}%, G5:{entry[11] or 0}%, G6:{entry[12] or 0}%, G7:{entry[13] or 0}%, G8:{entry[14] or 0}%"
-            struggles = entry[17] if entry[17] else ""
-            notes = entry[15] if entry[15] else ""
-            observations = entry[18] if entry[18] else ""
+            # entry format: dictionary with keys like 'test_date', 'created_at', 'g0_phonemic', etc.
+            test_date = entry.get('created_at', f"Assessment {i+1}")
+            g_scores = f"G0:{entry.get('g0_phonemic', 0)}%, G1:{entry.get('g1_cvc', 0)}%, G2:{entry.get('g2_digraphs', 0)}%, G3:{entry.get('g3_silent_e', 0)}%, G4:{entry.get('g4_vowel_teams', 0)}%, G5:{entry.get('g5_r_controlled', 0)}%, G6:{entry.get('g6_clusters', 0)}%, G7:{entry.get('g7_multisyllabic', 0)}%, G8:{entry.get('g8_reduction', 0)}%"
+            struggles = entry.get('struggling_words', "")
+            notes = entry.get('teacher_refined_notes', "") or entry.get('teacher_notes', "")
+            observations = entry.get('teacher_observations', "")
             
             entry_str = f"--- {test_date[:10]} ---\nScores: {g_scores}\n"
             if struggles:
@@ -54,8 +74,8 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
         recent = history[-2:] if len(history) >= 2 else history
         recent_entries = []
         for entry in recent:
-            struggles = entry[17] if entry[17] else ""
-            observations = entry[18] if entry[18] else ""
+            struggles = entry.get('struggling_words', "")
+            observations = entry.get('teacher_observations', "")
             if struggles or observations:
                 recent_entries.append(f"Recent: {struggles} | Notes: {observations}")
         recent_context = "\n".join(recent_entries) if recent_entries else ""

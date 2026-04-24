@@ -58,13 +58,13 @@ def init_db():
     ''')
     
     # Test Templates table
-    cursor.execute('''
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS test_templates (
-            test_id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             test_name TEXT NOT NULL,
             intended_words TEXT NOT NULL
         )
-    ''')
+    """)
     
     # Commit after table creation
     conn.commit()
@@ -145,66 +145,6 @@ def repair_schema(cursor):
             print("Schema Repair: Added default test template.")
     except:
         pass  # Table doesn't exist yet, will be created in init_db
-
-# ============================================================
-# TEST TEMPLATES (DIAGNOSTIC TEST LIBRARY)
-# ============================================================
-
-def get_all_test_templates():
-    """Returns all test templates ordered by name."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT test_id, test_name, intended_words 
-        FROM test_templates 
-        ORDER BY test_name
-    ''')
-    results = cursor.fetchall()
-    conn.close()
-    return [{"test_id": row[0], "test_name": row[1], "intended_words": row[2]} for row in results]
-
-def get_test_template(test_id):
-    """Returns a single test template by ID."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('SELECT test_id, test_name, intended_words FROM test_templates WHERE test_id = ?', (test_id,))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        return {"test_id": result[0], "test_name": result[1], "intended_words": result[2]}
-    return None
-
-def save_test_template(name, words, test_id=None):
-    """Saves a new test template. Auto-generates test_id if not provided."""
-    if test_id is None:
-        # Auto-generate test_id from name
-        test_id = name.lower().replace(' ', '_')[:30] + '_' + str(int(datetime.now().timestamp()))
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO test_templates (test_id, test_name, intended_words)
-        VALUES (?, ?, ?)
-    ''', (test_id, name, words))
-    conn.commit()
-    conn.close()
-    return True
-
-def delete_test_template(test_id):
-    """Deletes a test template."""
-    if test_id == 'default_standard':
-        return False, "Cannot delete the default test template."
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM test_templates WHERE test_id = ?', (test_id,))
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-    
-    if deleted > 0:
-        return True, f"Deleted {deleted} template(s)."
-    return False, "Template not found."
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
@@ -1424,5 +1364,137 @@ def allocate_student_to_teacher(student_identifier, teacher_email):
         return True, f"Updated {rows_updated_identity} identity rows, {rows_updated_assessments} assessment rows"
     except Exception as e:
         return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+import sqlite3
+import os
+
+
+def get_all_test_templates():
+    """Retrieves all diagnostic test templates."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM test_templates ORDER BY test_name")
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows] if rows else []
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+def get_test_template(template_id):
+    """Retrieves a specific test template by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM test_templates WHERE id = ?", (template_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+def save_test_template(test_name, intended_words):
+    """Save a new diagnostic test template."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO test_templates (test_name, intended_words)
+        VALUES (?, ?)
+    ''', (test_name, intended_words))
+    conn.commit()
+    conn.close()
+
+def save_draft_assessment(teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words):
+    """Save a draft assessment that can be completed later."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create drafts table if not exists
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS draft_assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id TEXT NOT NULL,
+            student_id TEXT NOT NULL,
+            student_name TEXT NOT NULL,
+            intended_words TEXT NOT NULL,
+            edited_text TEXT,
+            teacher_observations TEXT,
+            struggling_words TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Insert or update draft
+    cursor.execute('''
+        INSERT OR REPLACE INTO draft_assessments 
+        (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words))
+    
+    conn.commit()
+    conn.close()
+
+def get_draft_assessments(teacher_id):
+    """Get all draft assessments for a teacher."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, created_at, updated_at
+        FROM draft_assessments 
+        WHERE teacher_id = ?
+        ORDER BY updated_at DESC
+    ''', (teacher_id,))
+    
+    results = cursor.fetchall()
+    conn.close()
+    
+    column_names = ['id', 'student_id', 'student_name', 'intended_words', 'edited_text', 'teacher_observations', 'struggling_words', 'created_at', 'updated_at']
+    return [dict(zip(column_names, row)) for row in results]
+
+def delete_draft_assessment(draft_id):
+    """Delete a specific draft assessment."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM draft_assessments WHERE id = ?', (draft_id,))
+    conn.commit()
+    conn.close()
+
+def delete_test_template(template_id):
+    """Removes a test template from the library."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM test_templates WHERE id = ?", (template_id,))
+        conn.commit()
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+
+def save_ai_report(student_id, report_text):
+    """Saves the generated AI coaching report."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        # Note: Ensure your assessments table has teacher_refined_notes or similar
+        cursor.execute("""
+            UPDATE assessments 
+            SET teacher_refined_notes = ? 
+            WHERE student_id = ? 
+            AND id = (SELECT MAX(id) FROM assessments WHERE student_id = ?)
+        """, (report_text, student_id, student_id))
+        conn.commit()
+        return True
+    except sqlite3.OperationalError:
+        return False
     finally:
         conn.close()

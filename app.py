@@ -20,7 +20,8 @@ from database_manager import (
     get_raw_assessments, generate_class_groups, get_latest_teacher_notes, get_struggling_words,
     get_student_id_by_name, save_student_identity, get_student_name, get_pseudonym,
     generate_pseudonym, save_assessment, save_ai_report, get_name_for_id,
-    get_all_test_templates, get_test_template
+    get_all_test_templates, get_test_template, save_test_template, delete_test_template,
+    save_draft_assessment, get_draft_assessments, delete_draft_assessment
 )
 
 # =============================================================================
@@ -69,7 +70,7 @@ def migrate_legacy_profiles():
 
     updated = False
     profiles_data = []
-    teacher_id = st.session_state.get("email", "admin@example.com")
+    teacher_id = st.session_state.get("user_name", "admin@example.com")  # Use user_name which contains the email
     
     try:
         with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
@@ -198,6 +199,7 @@ def main():
     query_params = st.query_params
     if "email" in query_params:
         st.session_state.email = query_params["email"]
+        st.session_state.authenticated = True
     
     # Route based on authentication
     if not st.session_state.get('authenticated'):
@@ -210,7 +212,7 @@ def main():
 # =============================================================================
 def show_registration_page():
 
-    
+    st.image("logo.svg", width=200)
     st.title("Welcome to UnBoxEd Spelling Coach!")
     
     # 1. Get existing teachers from the database
@@ -233,8 +235,8 @@ def show_registration_page():
                     name = selected.split(' (')[0]
                     
                     st.session_state.authenticated = True
-                    st.session_state.user_name = name
-                    st.session_state.email = email
+                    st.session_state.user_name = email  # Store email as user_name
+                    st.session_state.email = name  # Store name as email (this seems backwards but matches current usage)
                     st.session_state.role = 'teacher'
                     st.rerun()
         else:
@@ -253,8 +255,8 @@ def show_registration_page():
                     register_teacher(new_email, new_name)
                     
                     st.session_state.authenticated = True
-                    st.session_state.user_name = new_name
-                    st.session_state.email = new_email
+                    st.session_state.user_name = new_email  # Store email as user_name
+                    st.session_state.email = new_name  # Store name as email (this seems backwards but matches current usage)
                     st.session_state.role = 'teacher'
                     st.rerun()
 
@@ -270,6 +272,7 @@ def show_teacher_dashboard():
     if st.sidebar.button("Log Out"):
         st.session_state.authenticated = False
         st.session_state.role = None
+        st.session_state.clear()  # Clear all session state
         st.rerun()
     
     # Sidebar navigation using radio buttons
@@ -296,7 +299,7 @@ def display_teacher_class():
     """Display the Teacher Dashboard with student cards and AI coaching."""
     st.header("My Class Dashboard")
     
-    teacher_id = st.session_state.get('email')
+    teacher_id = st.session_state.get('user_name')  # Use user_name which contains the email
     teacher_students_list = get_all_students_by_teacher(teacher_id)
     
     if not teacher_students_list:
@@ -323,18 +326,22 @@ def display_teacher_class():
             # AI Coaching button for each student
             if st.button(f"Generate AI Coach Report for {current_student_name}", key=f"ai_{current_student_name}"):
                 with st.spinner(f"Consulting AI about {student['pseudonym']}..."):
-                    # Get full history as list for holistic AI analysis
-                    history = get_student_history(student['student_id'], teacher_id=teacher_id, admin=False)
-                    from spelling_logic import get_ai_coaching_report
-                    raw_report = get_ai_coaching_report(
-                        student_alias=student['pseudonym'], 
-                        g_level=student.get('current_g_level', 'N/A'), 
-                        history=history
-                    )
-                    # Store raw report in session state for editing
-                    st.session_state[f'raw_report_{current_student_name}'] = raw_report
-                    st.session_state[f'edit_mode_{current_student_name}'] = True
-                    st.rerun()
+                    try:
+                        # Get full history as list for holistic AI analysis
+                        history = get_student_history(student['student_id'], teacher_id=teacher_id, admin=False)
+                        from spelling_logic import get_ai_coaching_report
+                        raw_report = get_ai_coaching_report(
+                            student_alias=student['pseudonym'], 
+                            g_level=student.get('current_g_level', 'N/A'), 
+                            history=history
+                        )
+                        # Store raw report in session state for editing
+                        st.session_state[f'raw_report_{current_student_name}'] = raw_report
+                        st.session_state[f'edit_mode_{current_student_name}'] = True
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to generate AI coach report: {str(e)}")
+                        st.info("Please try again later or contact support if the issue persists.")
             
             # Display editable report if in edit mode
             edit_key = f'edit_mode_{current_student_name}'
@@ -391,11 +398,39 @@ def display_assessment_form():
     
     st.header("Add New Assessment")
     
+    # ---- DRAFT NOTIFICATION ----
+    teacher_id = st.session_state.get('user_name')
+    drafts = get_draft_assessments(teacher_id)
+    if drafts:
+        st.warning(f"📝 You have {len(drafts)} unfinished assessment draft(s).")
+        with st.expander("View Drafts"):
+            for draft in drafts:
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{draft['student_name']}** - {draft['updated_at'][:16]}")
+                with col2:
+                    if st.button("Load", key=f"load_draft_{draft['id']}"):
+                        # Load draft into session state
+                        st.session_state.pending_student_name = draft['student_name']
+                        st.session_state.pending_student_id = draft['student_id']
+                        st.session_state.edited_transcription = draft['edited_text'] or ""
+                        st.session_state.teacher_observations_input = draft['teacher_observations'] or ""
+                        st.session_state.struggling_words_input = draft['struggling_words'] or ""
+                        st.session_state.intended_words_input = draft['intended_words']
+                        st.success(f"Loaded draft for {draft['student_name']}")
+                        st.rerun()
+                with col3:
+                    if st.button("Delete", key=f"delete_draft_{draft['id']}"):
+                        delete_draft_assessment(draft['id'])
+                        st.success("Draft deleted")
+                        st.rerun()
+        st.divider()
+    
     # ---- SIDEBAR: Student Selection & Settings ----
     with st.sidebar:
         st.header(" Student Profile")
         
-        teacher_id = st.session_state.get('email')
+        teacher_id = st.session_state.get('user_name')  # Use user_name which contains the email
         all_teacher_students = get_all_students_by_teacher(teacher_id)
         
         # Build dropdown options
@@ -783,73 +818,95 @@ def display_assessment_form():
         with col_text:
             st.subheader(" Step 3: Verify & Edit")
             edited_text = st.text_area(
-                "Verify and edit student attempts here:", 
-                value=st.session_state.raw_transcription,
-                height=400 
+                "Verify & Edit Transcription", 
+                value=st.session_state.get("raw_transcription", ""),
+                height=400
             )
 
-        # Run Analysis
-        if st.button(" Step 4: Run Analysis"):
-            if not student_name:
-                st.warning(" Please select or enter a Student Name in the sidebar!")
-            elif not edited_text:
-                st.warning(" No text to analyze. Please read handwriting or type manually.")
-            else:
-                with st.spinner(f"Analyzing {student_name}..."):
-                    st.session_state.edited_transcription = edited_text
-                    
-                    # Get intended words from selected template
-                    selected_template = template_options.get(selected_template_name)
-                    intended_words = selected_template['intended_words'] if selected_template else None
-                    
-                    result = run_scoring_crew(student_id, edited_text, intended_words=intended_words)
-                    
-                    if result is None:
-                        st.error("The AI returned nothing. Check your internet or API key.")
-                    else:
-                        st.session_state.analysis_result = result
+        # Run Analysis and Save Draft buttons
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button(" Step 4: Run Analysis"):
+                if not student_name:
+                    st.warning(" Please select or enter a Student Name in the sidebar!")
+                elif not edited_text:
+                    st.warning(" Please upload and transcribe a photo first!")
+                else:
+                    with st.spinner("Running AI analysis..."):
+                        # Get the intended words from the selected template
+                        if selected_template:
+                            intended_words = selected_template['intended_words']
+                        else:
+                            intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
                         
-    # Display Results
-    if st.session_state.analysis_result:
-        data = st.session_state.analysis_result 
+                        # Get the teacher observations
+                        teacher_observations = st.session_state.get("teacher_observations_input", "")
+                        
+                        result = run_scoring_crew(student_id, edited_text, intended_words=intended_words)
+                        g_scores = result["g_scores"]
+                        targets = result["targets"]
+                        notes = result["notes"]
+                        
+                        # Store results in session state
+                        st.session_state.analysis_result = {
+                            "g_scores": g_scores,
+                            "targets": targets,
+                            "notes": notes
+                        }
+                        
+                        # Update student profile with struggling words
+                        if g_scores:
+                            struggling_words = st.session_state.get("struggling_words_input", "")
+                            if struggling_words:
+                                st.session_state.students[student_id] = {
+                                    "struggles": struggling_words,
+                                    "mastered": st.session_state.students.get(student_id, {}).get("mastered", ""),
+                                    "target_group": st.session_state.students.get(student_id, {}).get("target_group", "g1")
+                                }
+                                save_profile(student_id, struggling_words, 
+                                          st.session_state.students.get(student_id, {}).get("mastered", ""),
+                                          st.session_state.students.get(student_id, {}).get("target_group", "g1"))
+                        
+                        st.success(" Analysis complete! Review and confirm below.")
+                        st.rerun()
+        
+        with col2:
+            if st.button("💾 Save Draft"):
+                if not student_name:
+                    st.warning(" Please select or enter a Student Name in the sidebar!")
+                elif not edited_text:
+                    st.warning(" Please upload and transcribe a photo first!")
+                else:
+                    # Get the intended words from the selected template
+                    if selected_template:
+                        intended_words = selected_template['intended_words']
+                    else:
+                        intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+                    
+                    # Save draft assessment
+                    teacher_id = st.session_state.get('user_name')
+                    teacher_observations = st.session_state.get("teacher_observations_input", "")
+                    struggling_words = st.session_state.get("struggling_words_input", "")
+                    
+                    save_draft_assessment(
+                        teacher_id, student_id, student_name, intended_words, 
+                        edited_text, teacher_observations, struggling_words
+                    )
+                    
+                    st.success(" Draft saved! You can complete it later.")
+                    st.info("💡 Tip: Your draft will appear at the top of this page next time you visit.")
 
-        st.subheader(f" Diagnostic for {student_name}")
-        
-        # Parse analysis results
-        import re
-        
-        g_scores = {f"g{i}": 0 for i in range(9)}
-        notes = "No notes generated."
-        targets = []
-        
-        if hasattr(data, 'g0_phonemic_awareness'):
-            g_scores = {
-                "g0": data.g0_phonemic_awareness, "g1": data.g1_cvc_mapping, "g2": data.g2_digraphs,
-                "g3": data.g3_silent_e, "g4": data.g4_vowel_teams, "g5": data.g5_r_controlled,
-                "g6": data.g6_clusters, "g7": data.g7_multisyllabic, "g8": data.g8_reduction_morphology
-            }
-            notes = data.teacher_notes
-            targets = data.suggested_next_groups
-                
-        elif hasattr(data, 'raw') and data.raw:
-            try:
-                raw_json = json.loads(data.raw)
-                g_scores = {
-                    "g0": raw_json.get("g0_phonemic_awareness", 0),
-                    "g1": raw_json.get("g1_cvc_mapping", 0),
-                    "g2": raw_json.get("g2_digraphs", 0),
-                    "g3": raw_json.get("g3_silent_e", 0),
-                    "g4": raw_json.get("g4_vowel_teams", 0),
-                    "g5": raw_json.get("g5_r_controlled", 0),
-                    "g6": raw_json.get("g6_clusters", 0),
-                    "g7": raw_json.get("g7_multisyllabic", 0),
-                    "g8": raw_json.get("g8_reduction_morphology", 0)
-                }
-                notes = raw_json.get("teacher_notes", "No notes generated.")
-                targets = raw_json.get("suggested_next_groups", [])
-            except:
-                notes = "AI returned text but couldn't parse scores automatically."
-                raw_text = data.raw if hasattr(data, 'raw') else str(data)
+        # Display analysis results if available
+        if st.session_state.get("analysis_result"):
+            g_scores = st.session_state.analysis_result["g_scores"]
+            targets = st.session_state.analysis_result["targets"]
+            notes = st.session_state.analysis_result["notes"]
+            
+            # Display scores
+            cols = st.columns(3)
+            cols[0].metric("g0: Phonemic", f"{g_scores['g0']}%")
+            cols[1].metric("g1: CVC", f"{g_scores['g1']}%")
+            cols[2].metric("g2: Digraphs", f"{g_scores['g2']}%")
                 found_groups = re.findall(r'g[0-8]', raw_text)
                 targets = list(dict.fromkeys(found_groups))
 
@@ -932,7 +989,7 @@ def display_assessment_form():
 
             struggling_words = st.session_state.get("struggling_words_input", "")
             teacher_observations = st.session_state.get("teacher_observations_input", "")
-            current_teacher_id = st.session_state.get("email")
+            current_teacher_id = st.session_state.get("user_name")  # Use user_name which contains the email
             
             # Get test template info
             test_template = selected_template.get('test_id') if selected_template else None
@@ -949,11 +1006,9 @@ def display_assessment_form():
 # =============================================================================
 def display_admin_page():
     """Display the Admin dashboard with factory reset and student allocation tools."""
-    teacher_email = st.session_state.get('email')
     ADMIN_EMAIL = "komododundee@gmail.com"
-    is_admin = teacher_email and teacher_email.lower() == ADMIN_EMAIL.lower()
     
-    if not is_admin:
+    if st.session_state.get('email', '').lower().strip() != ADMIN_EMAIL.lower().strip():
         st.error(" Admin access required.")
         return
     
@@ -1158,39 +1213,37 @@ def display_admin_page():
                 submitted = st.form_submit_button("Save Template", type="primary")
             
             if submitted:
-                if test_id_input and test_name_input and intended_words_input:
-                    # Generate slug from name if ID is empty
-                    template_id = test_id_input.strip() if test_id_input.strip() else test_name_input.lower().replace(' ', '_')[:20]
-                    save_test_template(template_id, test_name_input.strip(), intended_words_input.strip())
+                if test_name_input and intended_words_input:
+                    save_test_template(test_name_input.strip(), intended_words_input.strip())
                     st.success(f"Saved template: {test_name_input}")
                     st.rerun()
                 else:
-                    st.error("Please fill in all fields.")
+                    st.error("Please fill in Test Name and Intended Words.")
         
         st.markdown("---")
         st.subheader("Available Templates")
         
         templates = get_all_test_templates()
         if templates:
-            for t in templates:
+            for i, t in enumerate(templates):
                 with st.container():
                     col1, col2, col3 = st.columns([3, 3, 1])
                     with col1:
                         st.markdown(f"**{t['test_name']}**")
-                        st.caption(f"ID: {t['test_id']} | {len(t['intended_words'].split(','))} words")
+                        st.caption(f"ID: {t.get('id', 'N/A')} | {len(t['intended_words'].split(','))} words")
                     with col2:
                         words_preview = ', '.join(t['intended_words'].split(',')[:5])
                         if len(t['intended_words'].split(',')) > 5:
                             words_preview += '...'
                         st.caption(words_preview)
                     with col3:
-                        if t['test_id'] != 'default_standard':
-                            if st.button("Delete", key=f"del_template_{t['test_id']}"):
-                                success, msg = delete_test_template(t['test_id'])
+                        if t.get('id') != 1:  # Don't allow deleting the first/default template
+                            if st.button("Delete", key=f"del_template_{t.get('id', i)}"):
+                                success = delete_test_template(t.get('id'))
                                 if success:
-                                    st.success(msg)
+                                    st.success("Template deleted")
                                 else:
-                                    st.error(msg)
+                                    st.error("Failed to delete template")
                                 st.rerun()
                         else:
                             st.caption("Default")
