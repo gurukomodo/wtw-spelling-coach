@@ -896,6 +896,32 @@ def display_assessment_form():
                     st.success(" Draft saved! You can complete it later.")
                     st.info("💡 Tip: Your draft will appear at the top of this page next time you visit.")
 
+        # Initialize variables for analysis results
+        g_scores = {"g0": 0, "g1": 0, "g2": 0, "g3": 0, "g4": 0, "g5": 0, "g6": 0, "g7": 0, "g8": 0}
+        targets = []
+        notes = "No analysis available yet."
+        
+        # Auto-save draft if there's data
+        if student_name and edited_text and st.session_state.get("raw_transcription"):
+            try:
+                # Get the intended words from the selected template
+                if selected_template:
+                    intended_words = selected_template['intended_words']
+                else:
+                    intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+                
+                # Auto-save draft
+                teacher_observations = st.session_state.get("teacher_observations_input", "")
+                struggling_words = st.session_state.get("struggling_words_input", "")
+                
+                save_draft_assessment(
+                    teacher_id, student_id, student_name, intended_words, 
+                    edited_text, teacher_observations, struggling_words
+                )
+            except:
+                # Auto-save failure shouldn't break the app
+                pass
+        
         # Display analysis results if available
         if st.session_state.get("analysis_result"):
             g_scores = st.session_state.analysis_result["g_scores"]
@@ -907,24 +933,16 @@ def display_assessment_form():
             cols[0].metric("g0: Phonemic", f"{g_scores['g0']}%")
             cols[1].metric("g1: CVC", f"{g_scores['g1']}%")
             cols[2].metric("g2: Digraphs", f"{g_scores['g2']}%")
-                found_groups = re.findall(r'g[0-8]', raw_text)
-                targets = list(dict.fromkeys(found_groups))
-
-        # Display scores
-        cols = st.columns(3)
-        cols[0].metric("g0: Phonemic", f"{g_scores['g0']}%")
-        cols[1].metric("g1: CVC", f"{g_scores['g1']}%")
-        cols[2].metric("g2: Digraphs", f"{g_scores['g2']}%")
-        
-        cols2 = st.columns(3)
-        cols2[0].metric("g3: Silent E", f"{g_scores['g3']}%")
-        cols2[1].metric("g4: Vowel Teams", f"{g_scores['g4']}%")
-        cols2[2].metric("g5: R-Controlled", f"{g_scores['g5']}%")
-        
-        cols3 = st.columns(3)
-        cols3[0].metric("g6: Clusters", f"{g_scores['g6']}%")
-        cols3[1].metric("g7: Multisyllabic", f"{g_scores['g7']}%")
-        cols3[2].metric("g8: Reduction", f"{g_scores['g8']}%")
+            
+            cols2 = st.columns(3)
+            cols2[0].metric("g3: Silent E", f"{g_scores['g3']}%")
+            cols2[1].metric("g4: Vowel Teams", f"{g_scores['g4']}%")
+            cols2[2].metric("g5: R-Controlled", f"{g_scores['g5']}%")
+            
+            cols3 = st.columns(3)
+            cols3[0].metric("g6: Clusters", f"{g_scores['g6']}%")
+            cols3[1].metric("g7: Multisyllabic", f"{g_scores['g7']}%")
+            cols3[2].metric("g8: Reduction", f"{g_scores['g8']}%")
 
         # Instructional Targets
         st.subheader(" Instructional Targets")

@@ -66,6 +66,22 @@ def init_db():
         )
     """)
     
+    # Draft Assessments table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS draft_assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id TEXT NOT NULL,
+            student_id TEXT NOT NULL,
+            student_name TEXT NOT NULL,
+            intended_words TEXT NOT NULL,
+            edited_text TEXT,
+            teacher_observations TEXT,
+            struggling_words TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     # Commit after table creation
     conn.commit()
 
