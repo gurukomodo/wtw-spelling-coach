@@ -53,7 +53,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS teacher_settings (
             teacher_id TEXT PRIMARY KEY,
             teacher_name TEXT,
-            unit_description TEXT
+            unit_description TEXT,
+            google_sheet_url TEXT
         )
     ''')
     
@@ -123,12 +124,15 @@ def repair_schema(cursor):
         cursor.execute("ALTER TABLE student_identity ADD COLUMN pseudonym TEXT")
         print("Schema Repair: Added pseudonym column.")
     
-    # Add teacher_name column to teacher_settings if missing
+    # Add teacher_name and google_sheet_url columns to teacher_settings if missing
     cursor.execute("PRAGMA table_info(teacher_settings)")
     settings_cols = [col[1] for col in cursor.fetchall()]
     if "teacher_name" not in settings_cols:
         cursor.execute("ALTER TABLE teacher_settings ADD COLUMN teacher_name TEXT")
         print("Schema Repair: Added teacher_name column to teacher_settings.")
+    if "google_sheet_url" not in settings_cols:
+        cursor.execute("ALTER TABLE teacher_settings ADD COLUMN google_sheet_url TEXT")
+        print("Schema Repair: Added google_sheet_url column to teacher_settings.")
     
     # Add teacher_observations column to assessments if missing
     cursor.execute("PRAGMA table_info(assessments)")
@@ -322,7 +326,8 @@ def register_teacher(teacher_id, teacher_name):
         CREATE TABLE IF NOT EXISTS teacher_settings (
             teacher_id TEXT PRIMARY KEY,
             teacher_name TEXT,
-            unit_description TEXT
+            unit_description TEXT,
+            google_sheet_url TEXT
         )
     ''')
     
@@ -347,23 +352,28 @@ def get_teacher_name(teacher_id):
         return result[0]
     return teacher_id.split('@')[0]  # Fallback to email prefix
 
-def save_teacher_settings(teacher_id, description):
+def save_teacher_settings(teacher_id, description, google_sheet_url=None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO teacher_settings (teacher_id, unit_description)
-        VALUES (?, ?)
-    ''', (teacher_id, description))
+        INSERT OR REPLACE INTO teacher_settings (teacher_id, unit_description, google_sheet_url)
+        VALUES (?, ?, ?)
+    ''', (teacher_id, description, google_sheet_url))
     conn.commit()
     conn.close()
 
 def get_teacher_settings(teacher_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT unit_description FROM teacher_settings WHERE teacher_id = ?', (teacher_id,))
+    cursor.execute('SELECT unit_description, google_sheet_url FROM teacher_settings WHERE teacher_id = ?', (teacher_id,))
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result and result[0] else ""
+    if result:
+        return {
+            'unit_description': result[0] if result[0] else "",
+            'google_sheet_url': result[1] if result[1] else ""
+        }
+    return {'unit_description': '', 'google_sheet_url': ''}
 
 # ============================================================
 # STUDENT IDENTITY (PRIVACY-FRIENDLY)
@@ -1484,7 +1494,7 @@ def delete_draft_assessment(draft_id):
     conn.close()
 
 def delete_test_template(template_id):
-    """Removes a test template from the library."""
+    """Removes a test template from library."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -1495,6 +1505,65 @@ def delete_test_template(template_id):
         return False
     finally:
         conn.close()
+
+def get_sheet_data(url, student_name, since_date):
+    """
+    Fetch data from Google Sheet using CSV export trick.
+    Returns list of rows with timestamp newer than since_date.
+    """
+    import requests
+    import csv
+    from io import StringIO
+    
+    try:
+        # Extract sheet ID from URL
+        if '/d/' in url:
+            sheet_id = url.split('/d/')[1].split('/')[0]
+        else:
+            sheet_id = url.split('/edit')[1].split('#gid=')[0]
+        
+        # Use CSV export endpoint
+        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+        
+        # Fetch CSV data
+        response = requests.get(csv_url, timeout=10)
+        response.raise_for_status()
+        
+        # Parse CSV data
+        csv_data = response.text
+        reader = csv.DictReader(StringIO(csv_data))
+        
+        # Find tab named after student
+        rows = []
+        for row in reader:
+            # Look for tab with student name
+            if 'Sheet' in row and student_name.lower() in row['Sheet'].lower():
+                # Check timestamp filter
+                timestamp = row.get('Timestamp', '')
+                if timestamp and timestamp > since_date:
+                    rows.append({
+                        'incorrect': row.get('Incorrect', ''),
+                        'intended': row.get('Intended', ''),
+                        'timestamp': timestamp
+                    })
+        
+        return rows
+        
+    except requests.RequestException as e:
+        print(f"Failed to fetch Google Sheet: {e}")
+        return []
+    except Exception as e:
+        print(f"Error parsing Google Sheet data: {e}")
+        return []
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP error accessing Google Sheet: {e}")
+        return []
+    except requests.exceptions.ConnectionError as e:
+        print(f"Connection error accessing Google Sheet: {e}")
+        return []
+    except requests.exceptions.Timeout as e:
+        print(f"Timeout accessing Google Sheet: {e}")
+        return []
 
 def save_ai_report(student_id, report_text):
     """Saves the generated AI coaching report."""

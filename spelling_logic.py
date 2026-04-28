@@ -270,7 +270,7 @@ def run_scoring_crew(student_name, transcription_text):
     return crew.kickoff()
     return result
 '''
-def run_scoring_crew(student_id, transcription_text, intended_words=None):
+def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow_data=None):
     """
     Runs the AI scoring crew for a student's transcription.
     PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
@@ -289,10 +289,23 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None):
     # 1. FETCH PREVIOUS FEEDBACK
     past_feedback = get_latest_teacher_notes(student_id)
     feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR {student_alias}: {past_feedback}" if past_feedback else ""
+    
+    # 2. ADD SHADOW DATA CONTEXT
+    shadow_context = ""
+    if shadow_data:
+        shadow_observations = []
+        for entry in shadow_data:
+            shadow_observations.append(f"Daily misspelling ({entry['timestamp']}): '{entry['incorrect']}' instead of '{entry['intended']}'")
+        
+        if shadow_observations:
+            shadow_context = f"\n\nRECENT DAILY OBSERVATIONS:\n" + "\n".join(shadow_observations)
+        else:
+            shadow_context = "\n\nNo recent daily observations available.\n"
 
     # 2. DEFINE THE INSTRUCTIONS
     task_description = f"""
     {feedback_context}
+    {shadow_context}
     
     Analyze the following spelling attempts for {student_alias}:
     {transcription_text}
@@ -302,7 +315,7 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None):
     STRICT RULES:
     - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 
       corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
-    - Base all notes on VISIBLE EVIDENCE in the current {transcription_text}.
+    - Base all notes on VISIBLE EVIDENCE in the current transcription.
     
     FORMATTING RULES (CRITICAL):
     - When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
@@ -325,10 +338,33 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None):
 
     CRITICAL: You MUST reply with a valid JSON object only.
     Follow this exact structure:
+    
+    Score Variables:
+    score_0 = mastery percentage for g0 (0-100)
+    score_1 = mastery percentage for g1 (0-100)
+    score_2 = mastery percentage for g2 (0-100)
+    score_3 = mastery percentage for g3 (0-100)
+    score_4 = mastery percentage for g4 (0-100)
+    score_5 = mastery percentage for g5 (0-100)
+    score_6 = mastery percentage for g6 (0-100)
+    score_7 = mastery percentage for g7 (0-100)
+    score_8 = mastery percentage for g8 (0-100)
     {{
+        "student_name": "The Student",
+        "g0_phonemic_awareness": score_0,
+        "g1_cvc_mapping": score_1,
+        "g2_digraphs": score_2,
+        "g3_silent_e": score_3,
+        "g4_vowel_teams": score_4,
+        "g5_r_controlled": score_5,
+        "g6_clusters": score_6,
+        "g7_multisyllabic": score_7,
+        "g8_reduction_morphology": score_8,
         "suggested_next_groups": ["g1", "g2"],
-        "raw_analysis": "Your analysis text goes here."
+        "teacher_notes": "Your analysis text goes here."
     }}
+    
+    Replace score_N with actual percentage values (0-100).
     """
 
     task = Task(
