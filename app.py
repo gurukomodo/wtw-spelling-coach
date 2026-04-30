@@ -23,7 +23,7 @@ from database_manager import (
     get_student_id_by_name, save_student_identity, get_student_name, get_pseudonym,
     generate_pseudonym, save_assessment, save_ai_report, get_name_for_id,
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
-    save_draft_assessment, get_draft_assessments, delete_draft_assessment
+    save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data
 )
 
 # =============================================================================
@@ -193,30 +193,34 @@ def initialize_session_state():
 # =============================================================================
 def main():
     """Main router that checks authentication and routes to appropriate page."""
+    
+    # FIRST: Initialize session state to ensure all variables exist
     initialize_session_state()
+    
+    # SECOND: Check if already authenticated, bypass login screen
+    if st.session_state.get('authenticated') and st.session_state.get('user_name'):
+        show_teacher_dashboard()
+        return
+    
+    # THIRD: Check URL query params for parked login status
+    query_params = st.query_params
+    if "email" in query_params or "login" in query_params:
+        # Park login status in URL for persistence
+        email = query_params.get("email") or query_params.get("login")
+        st.session_state.email = email
+        st.session_state.user_name = email
+        st.session_state.authenticated = True
+        # Show dashboard immediately
+        show_teacher_dashboard()
+        return
+    
 
     # Check for legacy data and migrate it immediately after DB is ready
     migrate_legacy_profiles()
     
-    # Check if user is already authenticated in session state
-    if (st.session_state.get('authenticated') and 
-        st.session_state.get('email') and 
-        st.session_state.get('user_name')):
-        # User is already logged in, show dashboard
-        show_teacher_dashboard()
-    else:
-        # Handle URL query params for persistent login
-        query_params = st.query_params
-        if "email" in query_params:
-            st.session_state.email = query_params["email"]
-            st.session_state.user_name = query_params["email"]  # Also set user_name
-            st.session_state.authenticated = True
-        
-        # Route based on authentication
-        if not st.session_state.get('authenticated'):
-            show_registration_page()
-        else:
-            show_teacher_dashboard()
+    # Route based on authentication
+    if not st.session_state.get('authenticated'):
+        show_registration_page()
 
 # =============================================================================
 # PAGE: REGISTRATION
@@ -237,7 +241,7 @@ def show_registration_page():
         if existing_teachers:
             # Create a list of "Name (Email)" for the dropdown
             teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
-            selected = st.selectbox("Choose your account:", ["Select..."] + teacher_options)
+            selected = st.selectbox("Choose your account:", ["Select..."] + teacher_options, key='reg_teacher_select')
             
             if selected != "Select...":
                 if st.button("Login"):
@@ -249,6 +253,10 @@ def show_registration_page():
                     st.session_state.user_name = email  # Store email as user_name
                     st.session_state.email = name  # Store name as email (this seems backwards but matches current usage)
                     st.session_state.role = 'teacher'
+                    
+                    # Park login status in URL for persistence
+                    st.query_params["email"] = email
+                    st.query_params["login"] = email
                     st.rerun()
         else:
             st.info("No accounts found yet. Register on the right!")
@@ -269,6 +277,10 @@ def show_registration_page():
                     st.session_state.user_name = new_email  # Store email as user_name
                     st.session_state.email = new_name  # Store name as email (this seems backwards but matches current usage)
                     st.session_state.role = 'teacher'
+                    
+                    # Park login status in URL for persistence
+                    st.query_params["email"] = new_email
+                    st.query_params["login"] = new_email
                     st.rerun()
 
 # =============================================================================
@@ -430,11 +442,14 @@ def display_assessment_form():
                         st.session_state.pending_student_name = draft['student_name']
                         st.session_state.pending_student_id = draft['student_id']
                         st.session_state.edited_transcription = draft['edited_text'] or ""
+                        st.session_state.raw_transcription = draft['edited_text'] or ""
                         st.session_state.teacher_observations_input = draft['teacher_observations'] or ""
                         st.session_state.struggling_words_input = draft['struggling_words'] or ""
                         st.session_state.intended_words_input = draft['intended_words']
                         # Also set the current student selection to match the draft
                         st.session_state.selected_student = draft['student_name']
+                        # Set transcription_input for standard diagnostic test data
+                        st.session_state.transcription_input = draft['edited_text'] or ""
                         st.success(f"Loaded draft for {draft['student_name']}")
                         st.rerun()
                 with col3:
@@ -528,7 +543,8 @@ def display_assessment_form():
             st.session_state.last_loaded_student = ""
         
         if student_name and student_name != st.session_state.last_loaded_student:
-            profiles = st.session_state.students
+            # Use database to get student profiles instead of session state
+            profiles = load_profiles()
             if student_id and student_id in profiles:
                 data = profiles[student_id]
                 st.session_state.struggling_words_input = data.get("struggles", "")
@@ -562,16 +578,10 @@ def display_assessment_form():
                     st.caption(f"Showing {len(history)} recorded sessions for {student_name}")
                     
                     # Helper function for safe row access
-                    def safe_get(row, index, default=None):
-                        """Safely get value from row by index with comprehensive error handling."""
+                    def safe_get(row, index, default=""):
                         try:
-                            if not row or not isinstance(row, (list, tuple)):
-                                return default
-                            if index < 0 or index >= len(row):
-                                return default
-                            value = row[index]
-                            return value if value is not None else default
-                        except (IndexError, TypeError, AttributeError):
+                            return row[index] if len(row) > index else default
+                        except Exception:
                             return default
                     
                     history_data = []
@@ -701,39 +711,65 @@ def display_assessment_form():
                 st.toast("Google Sheet URL saved!")
                 sheet_url = sheet_url_input
         
+        # Add checkbox for including all historical shadow data
+        include_all_shadow = st.sidebar.checkbox(
+            "Include all historical shadow data", 
+            value=False, 
+            help="Check this to ignore the last assessment date and pull all data from the Google Sheet."
+)
+        
         # Fixed comparison to handle all empty states
         if sheet_url and student_name and student_name not in [None, "None / New Student"]:
-            if st.button("🔄 Fetch Shadow Data", key="fetch_shadow_data"):
+            if st.button("Fetch Shadow Data", key="fetch_shadow_data"):
                 with st.spinner("Fetching shadow data from Google Sheet..."):
-                    # Get last assessment date for filtering
-                    history = get_student_history(student_id, teacher_id, admin=False)
-                    since_date = history[-1]['created_at'] if history else "2024-01-01"
-                    
-                    # Fetch shadow data
-                    shadow_data = get_sheet_data(sheet_url, student_name, since_date)
-                    
-                    if shadow_data:
-                        st.success(f"Found {len(shadow_data)} shadow data entries!")
+                    try:
+                        # Get last assessment date for filtering, or None if including all history
+                        history = get_student_history(student_id, teacher_id, admin=False)
+                        if include_all_shadow:
+                            since_date = None
+                        else:
+                            since_date = history[-1]['created_at'] if history else None
                         
-                        # Display preview
-                        with st.expander("📊 Shadow Data Preview", expanded=True):
+                        # Fetch shadow data with error handling
+                        shadow_data = get_sheet_data(sheet_url, student_name, since_date)
+                        
+                        if shadow_data:
+                            st.success(f"Found {len(shadow_data)} shadow data entries!")
+                            
+                            # Format shadow data for Errors text area
+                            shadow_data_formatted = []
                             for entry in shadow_data:
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write(f"**{entry['timestamp']}**")
-                                    st.write(f"Incorrect: `{entry['incorrect']}`")
-                                with col2:
-                                    st.write(f"Intended: `{entry['intended']}`")
-                        
-                        # Store in session for AI analysis
-                        st.session_state.shadow_data = shadow_data
-                    else:
-                        st.warning("No recent shadow data found for this student.")
+                                incorrect = entry.get('incorrect', '').strip()
+                                intended = entry.get('intended', '').strip()
+                                if incorrect and intended:
+                                    shadow_data_formatted.append(f"Incorrect: {incorrect} | Intended: {intended}")
+                            
+                            # Get current Errors content
+                            current_errors = st.session_state.get("struggling_words_input", "")
+                            
+                            # Append shadow data to existing content
+                            if shadow_data_formatted:
+                                shadow_data_text = "\n".join(shadow_data_formatted)
+                                if current_errors.strip():
+                                    updated_errors = current_errors.strip() + "\n" + shadow_data_text
+                                else:
+                                    updated_errors = shadow_data_text
+                                
+                                # Update session state and text area
+                                st.session_state.struggling_words_input = updated_errors
+                                st.session_state.shadow_data = shadow_data
+                                st.toast(f"Added {len(shadow_data_formatted)} shadow data entries to Errors section")
+                            else:
+                                st.warning("Shadow data found but no valid entries to add")
+                                st.session_state.shadow_data = shadow_data
+                        else:
+                            st.warning("No shadow data found for this student.")
+                    
+                    except Exception as e:
+                        st.error(f"Failed to fetch shadow data: {e}")
+                        st.info("Please check your Google Sheet URL and ensure it's publicly accessible.")
         elif not sheet_url:
             st.info("💡 Add Google Sheet URL to enable shadow data fetching.")
-        else:
-            st.warning("⚠️ Google Sheet not configured. Proceeding with test data only.")
-            st.info("💡 Tip: Add Google Sheet URL to enable shadow data fetching.")
         
         st.divider()
         
@@ -937,8 +973,8 @@ def display_assessment_form():
         st.divider()
         st.subheader("Student Profile & Context")
         
-        # Experienced Errors (Long-term Struggles)
-        st.write("**Experienced Errors (Long-term Struggles)**")
+        # Errors
+        st.write("**Errors**")
         struggling_words_input = st.text_area(
             "Enter words student has struggled with ('Correct:Attempt')",
             height=100,
@@ -967,14 +1003,18 @@ def display_assessment_form():
         # Save Student Data
         col_save, col_space = st.columns([1, 3])
         with col_save:
-            if st.button("💾 Save Student Data"):
+            if st.button(" Save Student Data"):
                 if student_name:
-                    st.session_state.students[student_id] = {
+                    # Use get_all_students_by_teacher() instead of st.session_state.students
+                    all_students = get_all_students_by_teacher(teacher_id)
+                    current_student_data = next((s for s in all_students if s.get("student_id") == student_id), {})
+                    profiles = load_profiles()
+                    profiles[student_id] = {
                         "struggles": struggling_words_input,
                         "mastered": mastered_words_input,
-                        "target_group": st.session_state.students.get(student_id, {}).get("target_group", "g1")
+                        "target_group": current_student_data.get("target_group", "g1")
                     }
-                    save_profile(student_id, struggling_words_input, mastered_words_input, st.session_state.students.get(student_id, {}).get("target_group", "g1"))
+                    save_profile(student_id, struggling_words_input, mastered_words_input, profiles.get(student_id, {}).get("target_group", "g1"))
                     st.success(f"Profile saved for {student_name}")
                 else:
                     st.warning("Please select a student first")
@@ -1001,7 +1041,7 @@ def display_assessment_form():
             st.subheader(" Step 3: Verify & Edit")
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                value=st.session_state.get("raw_transcription", ""),
+                value=st.session_state.get("edited_transcription", st.session_state.get("raw_transcription", "")),
                 height=400
             )
 
@@ -1015,8 +1055,11 @@ def display_assessment_form():
                     st.warning(" Please upload and transcribe a photo first!")
                 else:
                     with st.spinner("Running AI analysis..."):
-                        # Get the intended words from the selected template
-                        if selected_template:
+                        # Get the intended words - prioritize draft data, then template
+                        draft_intended = st.session_state.get("intended_words_input", "")
+                        if draft_intended:
+                            intended_words = draft_intended
+                        elif selected_template:
                             intended_words = selected_template['intended_words']
                         else:
                             intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
@@ -1032,72 +1075,67 @@ def display_assessment_form():
                         # Store raw AI result for debugging
                         st.session_state.raw_ai_result = str(result)
                         
-                        # Robust data extraction from CrewAI result
+                        # Extract data from AssessmentSchema object (CrewAI Pydantic result)
                         g_scores = {}
                         targets = []
-                        notes = ""
+                        teacher_notes = ""
                         
                         try:
-                            # Check if result is a string that needs JSON parsing
-                            if isinstance(result, str):
-                                parsed_result = json.loads(result)
-                                g_scores = parsed_result.get("g_scores", {})
-                                targets = parsed_result.get("targets", [])
-                                notes = parsed_result.get("notes", "")
-                            else:
-                                # Result is already an object/dict
-                                g_scores = result.get("g_scores", {})
-                                targets = result.get("targets", [])
-                                notes = result.get("notes", "")
-                        except (json.JSONDecodeError, AttributeError, TypeError) as e:
-                            st.warning(f"⚠️ AI output parsing issue: {e}")
-                            # Fallback to empty values
-                            g_scores = {}
-                            targets = []
-                            notes = "AI analysis incomplete. Please review manually."
-                        
-                        # Map AI response keys to UI keys and ensure defaults
-                        mapped_g_scores = {}
-                        if isinstance(g_scores, dict):
-                            # Map from AI keys (g0_phonemic_awareness) to UI keys (g0)
-                            key_mapping = {
-                                'g0_phonemic_awareness': 'g0',
-                                'g1_cvc_mapping': 'g1', 
-                                'g2_digraphs': 'g2',
-                                'g3_silent_e': 'g3',
-                                'g4_vowel_teams': 'g4',
-                                'g5_r_controlled': 'g5',
-                                'g6_clusters': 'g6',
-                                'g7_multisyllabic': 'g7',
-                                'g8_reduction_morphology': 'g8'
+                            # Extract G-scores from the AssessmentSchema object
+                            g_scores = {
+                                'g0': getattr(result, 'g0_phonemic_awareness', 0),
+                                'g1': getattr(result, 'g1_cvc_mapping', 0),
+                                'g2': getattr(result, 'g2_digraphs', 0),
+                                'g3': getattr(result, 'g3_silent_e', 0),
+                                'g4': getattr(result, 'g4_vowel_teams', 0),
+                                'g5': getattr(result, 'g5_r_controlled', 0),
+                                'g6': getattr(result, 'g6_clusters', 0),
+                                'g7': getattr(result, 'g7_multisyllabic', 0),
+                                'g8': getattr(result, 'g8_reduction_morphology', 0)
                             }
                             
-                            # Map AI keys to UI keys with fallback to 0
-                            for ai_key, ui_key in key_mapping.items():
-                                mapped_g_scores[ui_key] = g_scores.get(ai_key, 0)
-                        else:
-                            # If g_scores is not a dict, create default values
-                            mapped_g_scores = {f'g{i}': 0 for i in range(9)}
+                            # Extract teacher notes and suggested groups
+                            teacher_notes = getattr(result, 'teacher_notes', 'No analysis available yet.')
+                            suggested_groups = getattr(result, 'suggested_next_groups', [])
+                            targets = suggested_groups if suggested_groups else []
+                            
+                        except Exception as e:
+                            st.warning(f"⚠️ AI output parsing issue: {e}")
+                            # Fallback to empty values
+                            g_scores = {f'g{i}': 0 for i in range(9)}
+                            targets = []
+                            teacher_notes = "AI analysis incomplete. Please review manually."
                         
-                        # Store results in session state
+                        # Store results in session state EXPLICITLY for UI to use
                         st.session_state.analysis_result = {
-                            "g_scores": mapped_g_scores,
+                            "g_scores": g_scores,
                             "targets": targets,
-                            "notes": notes
+                            "notes": teacher_notes
                         }
                         
+                        # CRITICAL: Also store teacher_notes separately for the teacher notes box
+                        st.session_state.analysis_notes = teacher_notes
+                        
+                        # CRITICAL: Store individual G-scores for the UI boxes
+                        for i in range(9):
+                            st.session_state[f'g{i}_score'] = g_scores.get(f'g{i}', 0)
+                        
                         # Update student profile with struggling words
-                        if g_scores:
-                            struggling_words = st.session_state.get("struggling_words_input", "")
-                            if struggling_words:
-                                st.session_state.students[student_id] = {
-                                    "struggles": struggling_words,
-                                    "mastered": st.session_state.students.get(student_id, {}).get("mastered", ""),
-                                    "target_group": st.session_state.students.get(student_id, {}).get("target_group", "g1")
-                                }
-                                save_profile(student_id, struggling_words, 
-                                          st.session_state.students.get(student_id, {}).get("mastered", ""),
-                                          st.session_state.students.get(student_id, {}).get("target_group", "g1"))
+                        teacher_notes = get_latest_teacher_notes(student_id)
+                        struggling_words = st.session_state.get("struggling_words_input", "")
+                        if struggling_words:
+                            # Use get_all_students_by_teacher() instead of st.session_state.students
+                            all_students = get_all_students_by_teacher(teacher_id)
+                            current_student_data = next((s for s in all_students if s.get("student_id") == student_id), {})
+                            profiles = load_profiles()
+                            profiles[student_id] = {
+                                "struggles": struggling_words,
+                                "mastered": mastered_words_input,
+                                "target_group": current_student_data.get("target_group", "g1")
+                            }
+                            save_profile(student_id, struggling_words, 
+                                          profiles.get(student_id, {}).get("mastered", ""),
+                                          profiles.get(student_id, {}).get("target_group", "g1"))
                         
                         st.success(" Analysis complete! Review and confirm below.")
                         st.rerun()
@@ -1122,7 +1160,8 @@ def display_assessment_form():
                     
                     save_draft_assessment(
                         teacher_id, student_id, student_name, intended_words, 
-                        edited_text, teacher_observations, struggling_words
+                        edited_text, teacher_observations, struggling_words,
+                        st.session_state.get('shadow_data', [])
                     )
                     
                     st.success(" Draft saved! You can complete it later.")
@@ -1148,7 +1187,8 @@ def display_assessment_form():
                 
                 save_draft_assessment(
                     teacher_id, student_id, student_name, intended_words, 
-                    edited_text, teacher_observations, struggling_words
+                    edited_text, teacher_observations, struggling_words,
+                    st.session_state.get('shadow_data', [])
                 )
             except:
                 # Auto-save failure shouldn't break the app
@@ -1167,18 +1207,18 @@ def display_assessment_form():
                         g_scores[f'g{i}'] = 0
             
             targets = st.session_state.analysis_result["targets"]
-            notes = st.session_state.analysis_result["notes"]
+            notes = st.session_state.analysis_result.get("notes", st.session_state.get("analysis_notes", "No analysis available yet."))
             
-            # Display editable scores
+            # Display editable scores using session state values
             cols = st.columns(3)
             with cols[0]:
-                g0_score = st.number_input("g0: Phonemic", value=g_scores.get('g0', 0), min_value=0, max_value=100, key="edit_g0")
+                g0_score = st.number_input("g0: Phonemic", value=st.session_state.get('g0_score', g_scores.get('g0', 0)), min_value=0, max_value=100, key="edit_g0")
                 st.metric("Current", f"{g_scores.get('g0', 0)}%")
             with cols[1]:
-                g1_score = st.number_input("g1: CVC", value=g_scores.get('g1', 0), min_value=0, max_value=100, key="edit_g1")
+                g1_score = st.number_input("g1: CVC", value=st.session_state.get('g1_score', g_scores.get('g1', 0)), min_value=0, max_value=100, key="edit_g1")
                 st.metric("Current", f"{g_scores.get('g1', 0)}%")
             with cols[2]:
-                g2_score = st.number_input("g2: Digraphs", value=g_scores.get('g2', 0), min_value=0, max_value=100, key="edit_g2")
+                g2_score = st.number_input("g2: Digraphs", value=st.session_state.get('g2_score', g_scores.get('g2', 0)), min_value=0, max_value=100, key="edit_g2")
                 st.metric("Current", f"{g_scores.get('g2', 0)}%")
             
             cols2 = st.columns(3)
@@ -1191,11 +1231,7 @@ def display_assessment_form():
             cols3[1].metric("g7: Multisyllabic", f"{g_scores.get('g7', 0)}%")
             cols3[2].metric("g8: Reduction", f"{g_scores.get('g8', 0)}%")
 
-            # Raw AI Output for debugging
-            if 'raw_ai_result' in st.session_state:
-                with st.expander("🔍 View Raw AI Output (Debug)"):
-                    st.code(st.session_state.raw_ai_result, language='json')
-
+            
         # Instructional Targets
         st.subheader(" Instructional Targets")
         
@@ -1229,10 +1265,17 @@ def display_assessment_form():
             )
         
         with col2:
-            default_text_area_val = notes if notes != "No notes generated." else "Type your own diagnostic notes here..."
+            # Use teacher_notes from analysis_result, with fallback to analysis_notes session state
+            ai_notes = ""
+            if st.session_state.get("analysis_result"):
+                ai_notes = st.session_state.analysis_result.get("notes", "")
+            
+            # Priority: analysis_notes session state > analysis_result notes > default placeholder
+            teacher_notes_value = st.session_state.get('analysis_notes', ai_notes) if ai_notes else st.session_state.get('analysis_notes', '')
+            
             final_notes = st.text_area(
                 "Final Diagnostic Notes (The 'Gold Standard')", 
-                value=default_text_area_val, 
+                value=teacher_notes_value if teacher_notes_value and teacher_notes_value not in ["No analysis available yet.", "AI analysis incomplete. Please review manually."] else "Type your own diagnostic notes here...", 
                 height=400
             )
 

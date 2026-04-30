@@ -1436,7 +1436,7 @@ def save_test_template(test_name, intended_words):
     conn.commit()
     conn.close()
 
-def save_draft_assessment(teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words):
+def save_draft_assessment(teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, shadow_data=None):
     """Save a draft assessment that can be completed later."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -1452,6 +1452,7 @@ def save_draft_assessment(teacher_id, student_id, student_name, intended_words, 
             edited_text TEXT,
             teacher_observations TEXT,
             struggling_words TEXT,
+            shadow_data TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -1460,9 +1461,9 @@ def save_draft_assessment(teacher_id, student_id, student_name, intended_words, 
     # Insert or update draft
     cursor.execute('''
         INSERT OR REPLACE INTO draft_assessments 
-        (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ''', (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words))
+        (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, shadow_data, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (teacher_id, student_id, student_name, intended_words, edited_text, teacher_observations, struggling_words, shadow_data))
     
     conn.commit()
     conn.close()
@@ -1510,11 +1511,17 @@ def get_sheet_data(url, student_name, since_date):
     """
     Fetch data from Google Sheet using CSV export trick.
     Returns list of rows with timestamp newer than since_date.
+    If since_date is None, returns ALL data for the student.
+    
+    Google Sheet structure: Each tab is named after a student and contains 
+    timestamp, incorrect, and intended columns.
     """
     import requests
     import csv
     from io import StringIO
+    import pandas as pd
     
+        
     try:
         # Extract sheet ID from URL
         if '/d/' in url:
@@ -1522,32 +1529,75 @@ def get_sheet_data(url, student_name, since_date):
         else:
             sheet_id = url.split('/edit')[1].split('#gid=')[0]
         
-        # Use CSV export endpoint
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+        # Try to find the correct tab by testing common gid values
+        # Google Sheets typically use sequential gid values starting from 0
+        max_gids_to_try = 20  # Reasonable limit for number of tabs
         
-        # Fetch CSV data
-        response = requests.get(csv_url, timeout=10)
-        response.raise_for_status()
+        for gid in range(max_gids_to_try):
+            try:
+                # Construct URL for specific tab
+                tab_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+                
+                # Fetch CSV data from this tab
+                response = requests.get(tab_url, timeout=10)
+                response.raise_for_status()
+                
+                # Parse CSV data
+                csv_data = response.text
+                reader = csv.DictReader(StringIO(csv_data))
+                
+                # Check if this tab has the expected structure (timestamp, incorrect, intended)
+                if not reader.fieldnames:
+                    continue
+                    
+                # Normalize header names (case-insensitive)
+                column_mapping = {}
+                for header in reader.fieldnames:
+                    header_lower = header.lower().strip()
+                    if 'timestamp' in header_lower:
+                        column_mapping['timestamp'] = header
+                    elif 'incorrect' in header_lower:
+                        column_mapping['incorrect'] = header
+                    elif 'intended' in header_lower:
+                        column_mapping['intended'] = header
+                
+                # If we found the expected columns, process this tab
+                if len(column_mapping) >= 2:  # At least timestamp and one of incorrect/intended
+                    # Process rows from this tab
+                    rows = []
+                    for row in reader:
+                        try:
+                            # Get timestamp with normalized column name
+                            timestamp = row.get(column_mapping.get('timestamp', 'timestamp'), '')
+                            
+                            # Apply date filter if since_date is provided
+                            if since_date is None or (timestamp and timestamp >= since_date):
+                                rows.append({
+                                    'incorrect': row.get(column_mapping.get('incorrect', 'incorrect'), ''),
+                                    'intended': row.get(column_mapping.get('intended', 'intended'), ''),
+                                    'timestamp': timestamp
+                                })
+                            
+                        except Exception as e:
+                            continue
+                    
+                    # If we found data, return it
+                    if rows:
+                        return rows
+                    else:
+                        # No data found in this tab, continue to next
+                        continue
+                else:
+                    # This tab doesn't have the expected structure, continue to next
+                    continue
+                    
+            except requests.RequestException as e:
+                continue
+            except Exception as e:
+                continue
         
-        # Parse CSV data
-        csv_data = response.text
-        reader = csv.DictReader(StringIO(csv_data))
-        
-        # Find tab named after student
-        rows = []
-        for row in reader:
-            # Look for tab with student name
-            if 'Sheet' in row and student_name.lower() in row['Sheet'].lower():
-                # Check timestamp filter
-                timestamp = row.get('Timestamp', '')
-                if timestamp and timestamp > since_date:
-                    rows.append({
-                        'incorrect': row.get('Incorrect', ''),
-                        'intended': row.get('Intended', ''),
-                        'timestamp': timestamp
-                    })
-        
-        return rows
+        # If we get here, no valid tab was found
+        return []
         
     except requests.RequestException as e:
         print(f"Failed to fetch Google Sheet: {e}")

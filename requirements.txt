@@ -9,3 +9,5 @@ litellm
 watchdog
 fastapi
 google-generativeai
+reportlab
+qrcode[pil]
