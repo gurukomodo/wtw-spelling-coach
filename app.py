@@ -736,20 +736,32 @@ def display_assessment_form():
                         if shadow_data:
                             st.success(f"Found {len(shadow_data)} shadow data entries!")
                             
-                            # Format shadow data for Errors text area
-                            shadow_data_formatted = []
+                            # Format shadow data for Errors text area with deduplication
+                            current_errors = st.session_state.get("struggling_words_input", "")
+                            existing_entries = set()
+                            
+                            # Parse existing entries for deduplication
+                            if current_errors.strip():
+                                for line in current_errors.strip().split('\n'):
+                                    line = line.strip()
+                                    if ':' in line:
+                                        existing_entries.add(line.lower())
+                            
+                            # Format new shadow data entries as Intended:Incorrect
+                            new_entries = []
                             for entry in shadow_data:
                                 incorrect = entry.get('incorrect', '').strip()
                                 intended = entry.get('intended', '').strip()
                                 if incorrect and intended:
-                                    shadow_data_formatted.append(f"Incorrect: {incorrect} | Intended: {intended}")
+                                    formatted_entry = f"{intended}:{incorrect}"
+                                    # Check for duplicates (case-insensitive)
+                                    if formatted_entry.lower() not in existing_entries:
+                                        new_entries.append(formatted_entry)
+                                        existing_entries.add(formatted_entry.lower())
                             
-                            # Get current Errors content
-                            current_errors = st.session_state.get("struggling_words_input", "")
-                            
-                            # Append shadow data to existing content
-                            if shadow_data_formatted:
-                                shadow_data_text = "\n".join(shadow_data_formatted)
+                            # Append only unique entries to existing content
+                            if new_entries:
+                                shadow_data_text = "\n".join(new_entries)
                                 if current_errors.strip():
                                     updated_errors = current_errors.strip() + "\n" + shadow_data_text
                                 else:
@@ -758,9 +770,9 @@ def display_assessment_form():
                                 # Update session state and text area
                                 st.session_state.struggling_words_input = updated_errors
                                 st.session_state.shadow_data = shadow_data
-                                st.toast(f"Added {len(shadow_data_formatted)} shadow data entries to Errors section")
+                                st.toast(f"Shadow data imported: {len(new_entries)} new entries added")
                             else:
-                                st.warning("Shadow data found but no valid entries to add")
+                                st.toast("Shadow data imported: no new unique entries found")
                                 st.session_state.shadow_data = shadow_data
                         else:
                             st.warning("No shadow data found for this student.")
@@ -976,9 +988,9 @@ def display_assessment_form():
         # Errors
         st.write("**Errors**")
         struggling_words_input = st.text_area(
-            "Enter words student has struggled with ('Correct:Attempt')",
+            "Errors Enter words student has struggled with (Intended:Incorrect)",
             height=100,
-            placeholder="e.g., 'cat:kat', 'bed:bedd', 'sit:sit', 'run:runn', 'hop:hop'",
+            placeholder="e.g., 'talk:tack', 'bed:bedd', 'sit:sit', 'run:runn', 'hop:hop'",
             key="struggling_words_input"
         )
         
