@@ -43,25 +43,25 @@ class ActivityPDF:
         elements.append(Image("/logo.svg", width=1 * inch, height=1 * inch))
         elements.append(Image("origami_swan.png", width=1 * inch, height=1 * inch, hAlign='RIGHT'))
         elements.append(self.create_footer_qr())
-        return elements
+        return [item for item in elements]
 
     def create_task_sheet(self):
         elements = []
         elements.append(Paragraph("WALT: " + self.data['walt_text'], self.styles['body']))
         elements.append(Paragraph("TIB: " + self.data['tib_text'], self.styles['body']))
         elements.append(self.create_footer_qr())
-        return elements
+        return [item for item in elements]
 
     def create_response_sheet(self):
         elements = []
         elements.append(Paragraph("WILF: " + self.data['wilf_text'], self.styles['body']))
         elements.append(self.create_footer_qr())
-        return elements
+        return [item for item in elements]
 
     def create_footer_qr(self):
         # Create QR code
         qr_code = "https://unboxed-learning.streamlit.app/?student_id=" + self.data['student_id'] + "&task=" + self.data['task_id']
-        return Paragraph(qr_code, self.styles['body'])
+        return [Paragraph(qr_code, self.styles['body'])]
 
 # Example usage:
 data = {
