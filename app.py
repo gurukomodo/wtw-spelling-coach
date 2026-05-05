@@ -1035,6 +1035,12 @@ def display_assessment_form():
     
     uploaded_file = st.file_uploader(" Step 1: Upload Test Photo", type=["jpg", "jpeg", "png"])
 
+    # Store uploaded file in session state for persistence
+    if uploaded_file:
+        st.session_state.uploaded_file = uploaded_file
+    elif st.session_state.get("uploaded_file"):
+        uploaded_file = st.session_state.uploaded_file
+
     # Pre-process & Layout
     if uploaded_file:
         clean_base64, clean_img = preprocess_image(uploaded_file)
@@ -1044,19 +1050,57 @@ def display_assessment_form():
         with col_img:
             st.subheader(" AI's View (Cleaned)")
             st.image(clean_img, width="stretch")
+            st.write("Step 2 reached")  # Diagnostic
             if st.button(" Step 2: Read Handwriting"):
                 with st.spinner("AI is reading..."):
-                    st.session_state.raw_transcription = transcribe_handwriting(clean_base64)
-                    st.rerun()
+                    result_text = transcribe_handwriting(clean_base64)
+                    
+                    # Button interception check
+                    if result_text:
+                        st.success("Data received from AI")
+                        
+                        # Clean string: Strip AI conversational preamble
+                        if "fan:" in result_text:
+                            cleaned_text = result_text[result_text.find("fan:"):]
+                        else:
+                            cleaned_text = result_text
+                        st.session_state.raw_transcription = cleaned_text
+                        st.session_state.edited_transcription = cleaned_text  # Set edited transcription to AI result
+                    else:
+                        st.error("AI returned empty string")
+                    
+                    st.rerun()  # Force UI refresh immediately after processing
 
         with col_text:
             st.subheader(" Step 3: Verify & Edit")
+            
+            # Pre-check for empty edited_transcription
+            if not st.session_state.get("edited_transcription"):
+                st.info("Waiting for handwriting analysis...")
+            
+            # Production mode: Show helpful placeholder if no transcription yet
+            if not st.session_state.get("edited_transcription"):
+                st.info("No attempts recorded yet. Complete Step 2 to begin.")
+            
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                value=st.session_state.get("edited_transcription", st.session_state.get("raw_transcription", "")),
-                height=400
+                height=400,
+                key="edited_transcription"
             )
+            
+            # Save edited transcription to session state for persistence
+            if edited_text != st.session_state.get("edited_transcription", ""):
+                st.session_state.edited_transcription = edited_text
 
+        # Analysis Complexity Control
+        st.subheader(" Analysis Settings")
+        analysis_complexity = st.select_slider(
+            "Analysis Complexity",
+            options=["Brief", "Standard", "Detailed"],
+            value="Brief",
+            help="Brief: 2-3 sentence summary | Standard: Moderate detail | Detailed: Deep phonological breakdown"
+        )
+        
         # Run Analysis and Save Draft buttons
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -1082,7 +1126,7 @@ def display_assessment_form():
                         # Get shadow data if available
                         shadow_data = st.session_state.get("shadow_data", [])
                         
-                        result = run_scoring_crew(student_id, edited_text, intended_words=intended_words, shadow_data=shadow_data)
+                        result = run_scoring_crew(student_id, edited_text, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
                         
                         # Store raw AI result for debugging
                         st.session_state.raw_ai_result = str(result)
@@ -1271,7 +1315,7 @@ def display_assessment_form():
         with col1:
             edited_text = st.text_area(
                 "Student's Spelling Attempts", 
-                value=st.session_state.get('edited_transcription', st.session_state.raw_transcription),
+                value=st.session_state.edited_transcription,
                 height=400,
                 key="edited_text_final"
             )
@@ -1288,7 +1332,8 @@ def display_assessment_form():
             final_notes = st.text_area(
                 "Final Diagnostic Notes (The 'Gold Standard')", 
                 value=teacher_notes_value if teacher_notes_value and teacher_notes_value not in ["No analysis available yet.", "AI analysis incomplete. Please review manually."] else "Type your own diagnostic notes here...", 
-                height=400
+                height=400,
+                key="final_notes"
             )
 
         # Save Button

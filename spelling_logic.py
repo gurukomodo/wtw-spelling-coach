@@ -13,23 +13,29 @@ from database_manager import get_latest_teacher_notes
 api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 # Configure the SDK
-genai.configure(api_key=api_key)
+if api_key:
+    genai.configure(api_key=api_key)
+else:
+    print("ERROR: No GOOGLE_API_KEY found in st.secrets or environment variables")
 
 # Use configurable model with fallback logic
 def initialize_model():
     """Initialize model with fallback logic."""
     # Try environment override first
     model_name = set_model_from_env()
+    
     if model_name:
         try:
-            return genai.GenerativeModel(model_name)
+            model_obj = genai.GenerativeModel(model_name)
+            return model_obj
         except Exception as e:
             st.warning(f"Model {model_name} not available: {e}")
     
     # Try preferred models in order
     for fallback_model in get_model_fallbacks():
         try:
-            return genai.GenerativeModel(fallback_model)
+            model_obj = genai.GenerativeModel(fallback_model)
+            return model_obj
         except Exception as e:
             continue
     
@@ -37,7 +43,11 @@ def initialize_model():
     raise Exception("No available Gemini models found")
 
 # Initialize model globally
-model = initialize_model()
+try:
+    model = initialize_model()
+except Exception as e:
+    print(f"ERROR: Failed to initialize Gemini model: {e}")
+    model = None
 
 def get_ai_coaching_report(student_alias, g_level, history=None):
     """
@@ -202,7 +212,11 @@ def transcribe_handwriting(base64_image):
         ]}],
         temperature=0.0 # Keep this at 0.0 for zero creativity!
     )
-    return response.choices[0].message.content
+    
+    # Terminal tracing: Output raw text from AI model
+    raw_result = response.choices[0].message.content
+    
+    return raw_result
 
 # --- 4. CREWAI AGENTS ---
 '''assessor = Agent(
@@ -270,7 +284,7 @@ def run_scoring_crew(student_name, transcription_text):
     return crew.kickoff()
     return result
 '''
-def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow_data=None):
+def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow_data=None, analysis_complexity="Brief"):
     """
     Runs the AI scoring crew for a student's transcription.
     PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
@@ -279,6 +293,7 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
         student_id: Internal student ID (never shown to AI)
         transcription_text: The student's spelling attempts
         intended_words: Optional comma-separated list of target words (from test template)
+        analysis_complexity: "Brief", "Standard", or "Detailed" analysis level
     """
     # Use provided words or fall back to global default
     target_words = intended_words if intended_words else CURRENT_TEST_WORDS
@@ -336,6 +351,11 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
 
     CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
 
+    ANALYSIS COMPLEXITY: {analysis_complexity}
+    - Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
+    - Standard: Provide moderate detail with specific examples
+    - Detailed: Provide deep phonological breakdown with extensive analysis
+    
     CRITICAL: You MUST reply with a valid JSON object only.
     Follow this exact structure:
     
@@ -386,13 +406,27 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
             
         # If it just gave us raw text but didn't structure it:
         if hasattr(crew_output, 'raw') and crew_output.raw:
-            return crew_output
+            # Try to parse the raw JSON into AssessmentSchema
+            try:
+                import json
+                raw_data = json.loads(crew_output.raw)
+                
+                # Create AssessmentSchema object from parsed data
+                result = AssessmentSchema(**raw_data)
+                return result
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON parsing error in run_scoring_crew: {e}")
+                return crew_output
+            except Exception as e:
+                print(f"AssessmentSchema creation error in run_scoring_crew: {e}")
+                return crew_output
             
         # Fallback if it returned something weird
         return crew_output
         
     except Exception as e:
-        print(f"Crew execution error recorded: {e}")
+        print(f"Crew execution error in run_scoring_crew: {e}")
         # Return a fake object so app.py doesn't see 'None' and crash!
         class FallbackResult:
             student_name = "The Student"  # PRIVACY: Use alias
