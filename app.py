@@ -538,11 +538,30 @@ def display_assessment_form():
             st.session_state.current_student_name = student_name
             st.session_state.current_pseudonym = pseudonym or generate_pseudonym(teacher_id, student_id)
         
+        # NUCLEAR FIX: Clear global cache to force total refresh
+        st.cache_data.clear()
+        
+        # EXPLICIT RESET: Purge previous student's data before any operations
+        st.session_state.student_errors = ""
+        st.session_state.edited_transcription = ""
+        
         # Load student data when switching students
         if "last_loaded_student" not in st.session_state:
             st.session_state.last_loaded_student = ""
         
         if student_name and student_name != st.session_state.last_loaded_student:
+            # Clear any shadow data from previous student to prevent data leakage
+            if "shadow_data" in st.session_state:
+                st.session_state.shadow_data = None
+            
+            # State cleanup: Clear transcription and Errors field to prevent ghosting
+            if "edited_transcription" in st.session_state:
+                st.session_state.edited_transcription = ""
+            if "raw_transcription" in st.session_state:
+                st.session_state.raw_transcription = ""
+            if "struggling_words_input" in st.session_state:
+                st.session_state.struggling_words_input = ""
+            
             # Use database to get student profiles instead of session state
             profiles = load_profiles()
             if student_id and student_id in profiles:
@@ -730,11 +749,20 @@ def display_assessment_form():
                         else:
                             since_date = history[-1]['created_at'] if history else None
                         
-                        # Fetch shadow data with error handling
+                        # Fetch shadow data with error handling for tab-based structure
                         shadow_data = get_sheet_data(sheet_url, student_name, since_date)
                         
-                        if shadow_data:
-                            st.success(f"Found {len(shadow_data)} shadow data entries!")
+                        # Handle error responses from get_sheet_data
+                        if isinstance(shadow_data, dict) and "error" in shadow_data:
+                            st.error(shadow_data["error"])
+                        elif shadow_data:
+                            # Remove global count - only show count within specific student's tab
+                            st.success(f"Found {len(shadow_data)} entries for {student_name}")
+                            
+                            # Add to system log
+                            if "system_logs" not in st.session_state:
+                                st.session_state.system_logs = []
+                            st.session_state.system_logs.append(f"Fetched data for {student_name}")
                             
                             # Format shadow data for Errors text area with deduplication
                             current_errors = st.session_state.get("struggling_words_input", "")
@@ -747,12 +775,12 @@ def display_assessment_form():
                                     if ':' in line:
                                         existing_entries.add(line.lower())
                             
-                            # Format new shadow data entries as Intended:Incorrect
+                            # Format new shadow data entries as Intended:Incorrect (already in correct format)
                             new_entries = []
                             for entry in shadow_data:
-                                incorrect = entry.get('incorrect', '').strip()
                                 intended = entry.get('intended', '').strip()
-                                if incorrect and intended:
+                                incorrect = entry.get('incorrect', '').strip()
+                                if intended and incorrect:
                                     formatted_entry = f"{intended}:{incorrect}"
                                     # Check for duplicates (case-insensitive)
                                     if formatted_entry.lower() not in existing_entries:
@@ -775,7 +803,7 @@ def display_assessment_form():
                                 st.toast("Shadow data imported: no new unique entries found")
                                 st.session_state.shadow_data = shadow_data
                         else:
-                            st.warning("No shadow data found for this student.")
+                            st.warning(f"No data found in tab '{student_name}'")
                     
                     except Exception as e:
                         st.error(f"Failed to fetch shadow data: {e}")
@@ -947,6 +975,21 @@ def display_assessment_form():
         
         st.divider()
         
+        # System Log
+        with st.expander("🛠️ System Log", expanded=False):
+            # Initialize system_logs if not exists
+            if "system_logs" not in st.session_state:
+                st.session_state.system_logs = []
+            
+            # Display last 5 actions
+            recent_logs = st.session_state.system_logs[-5:] if len(st.session_state.system_logs) > 5 else st.session_state.system_logs
+            
+            if recent_logs:
+                for log_entry in recent_logs:
+                    st.write(f"• {log_entry}")
+            else:
+                st.write("No system actions recorded yet.")
+        
         # Reset button
         if st.button(" Start New Student"):
             st.session_state.raw_transcription = ""
@@ -985,13 +1028,19 @@ def display_assessment_form():
         st.divider()
         st.subheader("Student Profile & Context")
         
+        # UI Verification: Show which student's data is being viewed
+        st.caption(f"Currently viewing data for: {student_name}")
+        
+        # Diagnostic: Show active student info
+        st.write(f"Active Student ID: {student_id}")
+        
         # Errors
         st.write("**Errors**")
         struggling_words_input = st.text_area(
             "Errors Enter words student has struggled with (Intended:Incorrect)",
             height=100,
             placeholder="e.g., 'talk:tack', 'bed:bedd', 'sit:sit', 'run:runn', 'hop:hop'",
-            key="struggling_words_input"
+            key=f"errors_{student_name}"
         )
         
         # Mastered Words (Spelled Correctly)

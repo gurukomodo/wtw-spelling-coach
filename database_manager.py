@@ -1507,21 +1507,149 @@ def delete_test_template(template_id):
     finally:
         conn.close()
 
+def get_sheet_metadata(url):
+    """
+    Get Google Sheet metadata including sheet names and their corresponding gids.
+    Returns a list of dictionaries with sheet name and gid information.
+    """
+    import requests
+    import re
+    
+    try:
+        # Extract sheet ID from URL
+        if '/d/' in url:
+            sheet_id = url.split('/d/')[1].split('/')[0]
+        else:
+            sheet_id = url.split('/edit')[1].split('#gid=')[0]
+        
+        # Fetch the HTML page to extract sheet names
+        page_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+        response = requests.get(page_url, timeout=10)
+        response.raise_for_status()
+        
+        # Extract sheet names using regex pattern
+        # Google Sheets embeds sheet names in JavaScript variables
+        sheet_pattern = r'"sheets":\[\{"properties":{"sheetId":(\d+),"title":"([^"]+)"'
+        matches = re.findall(sheet_pattern, response.text)
+        
+        sheets = []
+        for sheet_id, sheet_name in matches:
+            sheets.append({
+                'gid': sheet_id,
+                'name': sheet_name.strip()
+            })
+        
+        return sheets
+        
+    except Exception as e:
+        print(f"Error getting sheet metadata: {e}")
+        return []
+
 def get_sheet_data(url, student_name, since_date):
     """
-    Fetch data from Google Sheet using CSV export trick.
-    Returns list of rows with timestamp newer than since_date.
-    If since_date is None, returns ALL data for the student.
+    Fetch data from Google Sheet using CSV export trick with tab-based structure.
+    Each student has their own individual tab named after them.
+    Returns list of entries in intended:incorrect format.
     
-    Google Sheet structure: Each tab is named after a student and contains 
-    timestamp, incorrect, and intended columns.
+    Google Sheet structure: Each tab is named after a student (e.g., 'Alice', 'Bob')
+    and contains 'intended' and 'incorrect' columns.
     """
     import requests
     import csv
     from io import StringIO
     import pandas as pd
     
+    if not student_name or student_name in [None, "None / New Student"]:
+        return []
         
+    try:
+        # Get sheet metadata to find the tab that matches student_name exactly
+        sheets = get_sheet_metadata(url)
+        
+        # DYNAMIC TAB SELECTION: Look for tab that matches student_name exactly
+        target_sheet = None
+        student_name_lower = student_name.lower().strip()
+        
+        for sheet in sheets:
+            sheet_name_lower = sheet['name'].lower().strip()
+            # Exact match only for tab selection
+            if sheet_name_lower == student_name_lower:
+                target_sheet = sheet
+                break
+        
+        if not target_sheet:
+            # ERROR HANDLING: Tab for selected student does not exist
+            return {"error": f"No tab found for {student_name}. Please create a sheet named {student_name} in workbook."}
+        
+        # Extract sheet ID from URL
+        if '/d/' in url:
+            sheet_id = url.split('/d/')[1].split('/')[0]
+        else:
+            sheet_id = url.split('/edit')[1].split('#gid=')[0]
+        
+        # Construct URL for the specific student's tab
+        tab_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_sheet['gid']}"
+        
+        # Fetch CSV data from this specific student's tab
+        response = requests.get(tab_url, timeout=10)
+        response.raise_for_status()
+        
+        # Parse CSV data into pandas DataFrame
+        csv_data = response.text
+        df = pd.read_csv(StringIO(csv_data))
+        
+        # Check if DataFrame has the expected structure
+        if df.empty:
+            return []
+            
+        # SPECIFIC HEADERS: Only read 'intended' and 'incorrect' columns
+        column_mapping = {}
+        for header in df.columns:
+            header_lower = header.lower().strip()
+            if 'intended' in header_lower:
+                column_mapping['intended'] = header
+            elif 'incorrect' in header_lower:
+                column_mapping['incorrect'] = header
+        
+        # Check if we found the required columns
+        if 'intended' not in column_mapping or 'incorrect' not in column_mapping:
+            return {"error": f"Tab '{student_name}' must contain 'intended' and 'incorrect' columns."}
+        
+        # DATA FORMATTING: Combine into intended:incorrect format
+        entries = []
+        for _, row in df.iterrows():
+            intended = row[column_mapping['intended']]
+            incorrect = row[column_mapping['incorrect']]
+            
+            # Skip empty rows
+            if pd.isna(intended) or pd.isna(incorrect) or str(intended).strip() == "" or str(incorrect).strip() == "":
+                continue
+                
+            entries.append({
+                'intended': str(intended).strip(),
+                'incorrect': str(incorrect).strip(),
+                'timestamp': row.get('timestamp', '')  # Include timestamp if available
+            })
+        
+        print(f"DEBUG: Found {len(entries)} entries for student '{student_name}' in tab '{target_sheet['name']}'")
+        print("STUDENT TAB CONTENT:", entries)
+        
+        return entries
+        
+    except requests.RequestException as e:
+        return {"error": f"Failed to fetch Google Sheet: {e}"}
+    except Exception as e:
+        return {"error": f"Error parsing Google Sheet data: {e}"}
+
+def _get_first_valid_sheet_data(url, student_name, since_date):
+    """
+    Fallback function that finds the first sheet with valid structure.
+    This maintains backward compatibility with the original behavior.
+    """
+    import requests
+    import csv
+    from io import StringIO
+    
     try:
         # Extract sheet ID from URL
         if '/d/' in url:
@@ -1530,7 +1658,6 @@ def get_sheet_data(url, student_name, since_date):
             sheet_id = url.split('/edit')[1].split('#gid=')[0]
         
         # Try to find the correct tab by testing common gid values
-        # Google Sheets typically use sequential gid values starting from 0
         max_gids_to_try = 20  # Reasonable limit for number of tabs
         
         for gid in range(max_gids_to_try):
