@@ -351,6 +351,8 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
 
     CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
 
+SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student attempted any words from that group in their transcription. If NO words from a specific group were attempted, you MUST assign "NA" (Not Assessed) instead of a numerical score. Only assign percentage scores (0-100) for groups where the student actually attempted words.
+
     ANALYSIS COMPLEXITY: {analysis_complexity}
     - Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
     - Standard: Provide moderate detail with specific examples
@@ -360,15 +362,15 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
     Follow this exact structure:
     
     Score Variables:
-    score_0 = mastery percentage for g0 (0-100)
-    score_1 = mastery percentage for g1 (0-100)
-    score_2 = mastery percentage for g2 (0-100)
-    score_3 = mastery percentage for g3 (0-100)
-    score_4 = mastery percentage for g4 (0-100)
-    score_5 = mastery percentage for g5 (0-100)
-    score_6 = mastery percentage for g6 (0-100)
-    score_7 = mastery percentage for g7 (0-100)
-    score_8 = mastery percentage for g8 (0-100)
+    score_0 = mastery percentage for g0 (0-100) OR "NA" if no g0 words attempted
+    score_1 = mastery percentage for g1 (0-100) OR "NA" if no g1 words attempted
+    score_2 = mastery percentage for g2 (0-100) OR "NA" if no g2 words attempted
+    score_3 = mastery percentage for g3 (0-100) OR "NA" if no g3 words attempted
+    score_4 = mastery percentage for g4 (0-100) OR "NA" if no g4 words attempted
+    score_5 = mastery percentage for g5 (0-100) OR "NA" if no g5 words attempted
+    score_6 = mastery percentage for g6 (0-100) OR "NA" if no g6 words attempted
+    score_7 = mastery percentage for g7 (0-100) OR "NA" if no g7 words attempted
+    score_8 = mastery percentage for g8 (0-100) OR "NA" if no g8 words attempted
     {{
         "student_name": "The Student",
         "g0_phonemic_awareness": score_0,

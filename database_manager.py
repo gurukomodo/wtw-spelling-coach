@@ -1547,56 +1547,41 @@ def get_sheet_metadata(url):
 
 def get_sheet_data(url, student_name, since_date):
     """
-    Fetch data from Google Sheet using CSV export trick with tab-based structure.
+    Fetch data from Google Sheet using public CSV export method.
     Each student has their own individual tab named after them.
     Returns list of entries in intended:incorrect format.
     
     Google Sheet structure: Each tab is named after a student (e.g., 'Alice', 'Bob')
     and contains 'intended' and 'incorrect' columns.
+    
+    NOTE: Sheet must be set to 'Anyone with the link can view' for this to work.
     """
     import requests
-    import csv
-    from io import StringIO
     import pandas as pd
+    from io import StringIO
     
     if not student_name or student_name in [None, "None / New Student"]:
         return []
         
     try:
-        # Get sheet metadata to find the tab that matches student_name exactly
-        sheets = get_sheet_metadata(url)
-        
-        # DYNAMIC TAB SELECTION: Look for tab that matches student_name exactly
-        target_sheet = None
-        student_name_lower = student_name.lower().strip()
-        
-        for sheet in sheets:
-            sheet_name_lower = sheet['name'].lower().strip()
-            # Exact match only for tab selection
-            if sheet_name_lower == student_name_lower:
-                target_sheet = sheet
-                break
-        
-        if not target_sheet:
-            # ERROR HANDLING: Tab for selected student does not exist
-            return {"error": f"No tab found for {student_name}. Please create a sheet named {student_name} in workbook."}
-        
         # Extract sheet ID from URL
         if '/d/' in url:
             sheet_id = url.split('/d/')[1].split('/')[0]
         else:
-            sheet_id = url.split('/edit')[1].split('#gid=')[0]
+            return {"error": "Invalid Google Sheet URL format"}
         
-        # Construct URL for the specific student's tab
-        tab_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_sheet['gid']}"
+        # Construct CSV export URL targeting specific student tab
+        csv_export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={student_name}"
         
-        # Fetch CSV data from this specific student's tab
-        response = requests.get(tab_url, timeout=10)
+        # Debug: Print the final generated URL
+        print(f"DEBUG: Generated CSV export URL: {csv_export_url}")
+        
+        # Fetch CSV data directly using requests
+        response = requests.get(csv_export_url, timeout=10)
         response.raise_for_status()
         
-        # Parse CSV data into pandas DataFrame
-        csv_data = response.text
-        df = pd.read_csv(StringIO(csv_data))
+        # Parse CSV data directly into pandas DataFrame
+        df = pd.read_csv(StringIO(response.text))
         
         # Check if DataFrame has the expected structure
         if df.empty:
@@ -1631,116 +1616,14 @@ def get_sheet_data(url, student_name, since_date):
                 'timestamp': row.get('timestamp', '')  # Include timestamp if available
             })
         
-        print(f"DEBUG: Found {len(entries)} entries for student '{student_name}' in tab '{target_sheet['name']}'")
-        print("STUDENT TAB CONTENT:", entries)
-        
         return entries
         
     except requests.RequestException as e:
+        print(f"DEBUG: Request failed for URL: {csv_export_url}")
         return {"error": f"Failed to fetch Google Sheet: {e}"}
     except Exception as e:
+        print(f"DEBUG: Exception occurred: {e}")
         return {"error": f"Error parsing Google Sheet data: {e}"}
-
-def _get_first_valid_sheet_data(url, student_name, since_date):
-    """
-    Fallback function that finds the first sheet with valid structure.
-    This maintains backward compatibility with the original behavior.
-    """
-    import requests
-    import csv
-    from io import StringIO
-    
-    try:
-        # Extract sheet ID from URL
-        if '/d/' in url:
-            sheet_id = url.split('/d/')[1].split('/')[0]
-        else:
-            sheet_id = url.split('/edit')[1].split('#gid=')[0]
-        
-        # Try to find the correct tab by testing common gid values
-        max_gids_to_try = 20  # Reasonable limit for number of tabs
-        
-        for gid in range(max_gids_to_try):
-            try:
-                # Construct URL for specific tab
-                tab_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-                
-                # Fetch CSV data from this tab
-                response = requests.get(tab_url, timeout=10)
-                response.raise_for_status()
-                
-                # Parse CSV data
-                csv_data = response.text
-                reader = csv.DictReader(StringIO(csv_data))
-                
-                # Check if this tab has the expected structure (timestamp, incorrect, intended)
-                if not reader.fieldnames:
-                    continue
-                    
-                # Normalize header names (case-insensitive)
-                column_mapping = {}
-                for header in reader.fieldnames:
-                    header_lower = header.lower().strip()
-                    if 'timestamp' in header_lower:
-                        column_mapping['timestamp'] = header
-                    elif 'incorrect' in header_lower:
-                        column_mapping['incorrect'] = header
-                    elif 'intended' in header_lower:
-                        column_mapping['intended'] = header
-                
-                # If we found the expected columns, process this tab
-                if len(column_mapping) >= 2:  # At least timestamp and one of incorrect/intended
-                    # Process rows from this tab
-                    rows = []
-                    for row in reader:
-                        try:
-                            # Get timestamp with normalized column name
-                            timestamp = row.get(column_mapping.get('timestamp', 'timestamp'), '')
-                            
-                            # Apply date filter if since_date is provided
-                            if since_date is None or (timestamp and timestamp >= since_date):
-                                rows.append({
-                                    'incorrect': row.get(column_mapping.get('incorrect', 'incorrect'), ''),
-                                    'intended': row.get(column_mapping.get('intended', 'intended'), ''),
-                                    'timestamp': timestamp
-                                })
-                            
-                        except Exception as e:
-                            continue
-                    
-                    # If we found data, return it
-                    if rows:
-                        return rows
-                    else:
-                        # No data found in this tab, continue to next
-                        continue
-                else:
-                    # This tab doesn't have the expected structure, continue to next
-                    continue
-                    
-            except requests.RequestException as e:
-                continue
-            except Exception as e:
-                continue
-        
-        # If we get here, no valid tab was found
-        return []
-        
-    except requests.RequestException as e:
-        print(f"Failed to fetch Google Sheet: {e}")
-        return []
-    except Exception as e:
-        print(f"Error parsing Google Sheet data: {e}")
-        return []
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP error accessing Google Sheet: {e}")
-        return []
-    except requests.exceptions.ConnectionError as e:
-        print(f"Connection error accessing Google Sheet: {e}")
-        return []
-    except requests.exceptions.Timeout as e:
-        print(f"Timeout accessing Google Sheet: {e}")
-        return []
 
 def save_ai_report(student_id, report_text):
     """Saves the generated AI coaching report."""

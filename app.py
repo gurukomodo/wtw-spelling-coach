@@ -180,7 +180,7 @@ def initialize_session_state():
     for key, default in [
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
-        ("edited_transcription", "")
+        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None)
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -299,7 +299,7 @@ def show_teacher_dashboard():
         st.rerun()
     
     # Sidebar navigation using radio buttons
-    page = st.sidebar.radio("Navigation", ["My UnBoxEd Class", "Add New Assessment", "Admin"])
+    page = st.sidebar.radio("Navigation", ["Class", "Admin"])
     
     # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
@@ -308,19 +308,253 @@ def show_teacher_dashboard():
     current_teacher_email = st.session_state.get('email')
     
     # Route to appropriate page function
-    if page == "My UnBoxEd Class":
-        display_teacher_class()
-    elif page == "Add New Assessment":
-        display_assessment_form()
+    if page == "Class":
+        display_class_page()
     elif page == "Admin":
         display_admin_page()
 
 # =============================================================================
-# COMPONENT: TEACHER CLASS (student cards with AI coaching)
+# COMPONENT: CLASS PAGE (student-centric view)
 # =============================================================================
-def display_teacher_class():
-    """Display the Teacher Dashboard with student cards and AI coaching."""
-    st.header("My UnBoxEd Dashboard")
+def display_class_page():
+    """Display the Class page with simple student list and navigation to detail view."""
+    st.header("My Class")
+    
+    # Get current teacher's students
+    current_teacher_email = st.session_state.get('email')
+    profiles = load_profiles()
+    teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
+    
+    if not teacher_students:
+        st.info("No students assigned to your class yet.")
+        return
+    
+    # Create simple table with Name and G-Level
+    st.subheader("Students")
+    
+    # Prepare data for display
+    student_data = []
+    for student_id, student_info in teacher_students.items():
+        student_data.append({
+            "Name": student_info.get('real_name', 'Unknown'),
+            "G-Level": student_info.get('target_group', 'g1'),
+            "Student ID": student_id
+        })
+    
+    # Sort by name
+    student_data.sort(key=lambda x: x["Name"])
+    
+    # Display as interactive table
+    for i, student in enumerate(student_data):
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            # Make name clickable for detail view
+            if st.button(student["Name"], key=f"student_{student['Student ID']}"):
+                st.session_state.selected_student = student['Student ID']
+                st.session_state.show_student_detail = True
+                st.rerun()
+        
+        with col2:
+            st.markdown(f"**{student['G-Level']}**")
+        
+        if i < len(student_data) - 1:
+            st.divider()
+    
+    # Check if we should show student detail view
+    if st.session_state.get('show_student_detail', False) and st.session_state.get('selected_student'):
+        display_student_detail_view()
+
+def display_student_detail_view():
+    """Display detailed view for a selected student with assessment workflow."""
+    selected_student_id = st.session_state.selected_student
+    profiles = load_profiles()
+    student_info = profiles.get(selected_student_id, {})
+    
+    # Back button
+    if st.button("← Back to Class"):
+        st.session_state.show_student_detail = False
+        st.session_state.selected_student = None
+        st.rerun()
+    
+    # Student header
+    st.header(f"Student Detail: {student_info.get('real_name', 'Unknown')}")
+    
+    # Student info display
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Current G-Level", student_info.get('target_group', 'g1'))
+    
+    with col2:
+        st.metric("Struggles", len(student_info.get('struggles', '').split(',')) if student_info.get('struggles') else 0)
+    
+    with col3:
+        st.metric("Mastered", len(student_info.get('mastered', '').split(',')) if student_info.get('mastered') else 0)
+    
+    # Display current errors and mastered words
+    st.subheader("Current Status")
+    
+    errors_col, mastered_col = st.columns(2)
+    
+    with errors_col:
+        st.write("**Struggling Words:**")
+        errors = student_info.get('struggles', '')
+        if errors:
+            for error in errors.split(','):
+                if error.strip():
+                    st.write(f"• {error.strip()}")
+        else:
+            st.write("None recorded")
+    
+    with mastered_col:
+        st.write("**Mastered Words:**")
+        mastered = student_info.get('mastered', '')
+        if mastered:
+            for word in mastered.split(','):
+                if word.strip():
+                    st.write(f"• {word.strip()}")
+        else:
+            st.write("None recorded")
+    
+    st.divider()
+    
+    # Add Assessment section with Step 1-5 workflow
+    st.subheader("Add Assessment")
+    display_assessment_workflow(selected_student_id, student_info.get('real_name', 'Unknown'))
+
+def display_assessment_workflow(student_id, student_name):
+    """Display the complete Step 1-5 assessment workflow."""
+    # Lock classroom data to selected student
+    current_teacher_email = st.session_state.get('email')
+    current_settings = get_teacher_settings(current_teacher_email)
+    sheet_url = current_settings.get('google_sheet_url', '')
+    
+    if sheet_url and not st.session_state.get('classroom_data'):
+        # Fetch classroom data for this student
+        try:
+            shadow_data = get_sheet_data(sheet_url, student_name, None)
+            if isinstance(shadow_data, list):
+                st.session_state.classroom_data = shadow_data
+                print(f"DEBUG: Fetched {len(shadow_data)} classroom data entries for {student_name}")
+        except Exception as e:
+            print(f"DEBUG: Failed to fetch classroom data: {e}")
+    
+    # Display classroom data if available
+    if st.session_state.get('classroom_data'):
+        st.subheader("Classroom Data")
+        st.write(f"Found {len(st.session_state.classroom_data)} recent observations:")
+        
+        for entry in st.session_state.classroom_data[:5]:  # Show latest 5
+            st.write(f"• {entry.get('incorrect', '')} → {entry.get('intended', '')}")
+    
+    # Step 1: Photo Upload
+    st.subheader("Step 1: Upload Photo")
+    uploaded_file = st.file_uploader("Upload student's handwriting photo", type=['png', 'jpg', 'jpeg'])
+    
+    if uploaded_file:
+        # Pre-process & Layout
+        clean_base64, clean_img = preprocess_image(uploaded_file)
+        
+        col_img, col_text = st.columns([1, 1])
+        
+        with col_img:
+            st.subheader("AI's View (Cleaned)")
+            st.image(clean_img, width="stretch")
+            
+            if st.button("Step 2: Read Handwriting") and not st.session_state.get('processing', False):
+                st.session_state['processing'] = True
+                print('DEBUG: Handwriting Analysis Started...')
+                with st.spinner('AI is reading handwriting...'):
+                    result_text = transcribe_handwriting(clean_base64)
+                    
+                    if result_text:
+                        st.success("Data received from AI")
+                        
+                        if "fan:" in result_text:
+                            cleaned_text = result_text[result_text.find("fan:"):]
+                        else:
+                            cleaned_text = result_text
+                        
+                        st.session_state['edited_transcription'] = cleaned_text
+                        st.session_state['raw_transcription'] = cleaned_text
+                        st.session_state['processing'] = False
+                        print(f"DEBUG: Saved to state: {st.session_state['edited_transcription'][:20]}...")
+                    else:
+                        st.error("AI returned empty string")
+                        st.session_state['processing'] = False
+        
+        with col_text:
+            st.subheader("Step 3: Verify & Edit")
+            
+            if not st.session_state.get("edited_transcription"):
+                st.info("Waiting for handwriting analysis...")
+            
+            edited_text = st.text_area(
+                "Verify & Edit Transcription", 
+                height=200,
+                key="edited_transcription"
+            )
+            
+            # Analysis Complexity Control
+            st.subheader("Analysis Settings")
+            analysis_complexity = st.select_slider(
+                "Analysis Complexity",
+                options=["Brief", "Standard", "Detailed"],
+                value="Brief",
+                help="Brief: 2-3 sentence summary | Standard: Moderate detail | Detailed: Deep phonological breakdown"
+            )
+            
+            # Step 4: Run Analysis
+            if st.button("Step 4: Run Analysis"):
+                if not student_name:
+                    st.warning("Please select a student!")
+                elif not edited_text:
+                    st.warning("Please upload and transcribe a photo first!")
+                else:
+                    with st.spinner("Running AI analysis..."):
+                        # Sync Step 3 data to Step 5 report field
+                        st.session_state['student_attempts_for_report'] = st.session_state.edited_transcription
+                        print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
+                        
+                        intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+                        shadow_data = st.session_state.get("classroom_data", [])
+                        
+                        print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew...")
+                        
+                        analysis_result = run_scoring_crew(student_id, st.session_state.edited_transcription, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
+                        
+                        teacher_notes = getattr(analysis_result, 'teacher_notes', '')
+                        st.session_state.final_diagnostic_notes = teacher_notes
+                        print(f"DEBUG: AI Analysis complete. Teacher notes extracted: {bool(teacher_notes)}")
+                        
+                        st.success("Analysis complete! Review and confirm below.")
+            
+            # Step 5: Teacher Refinement
+            st.subheader("Step 5: Teacher Refinement")
+            st.caption("Review the AI's notes above. Verify and record your final diagnostic decision.")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.text_area(
+                    "Student's Spelling Attempts", 
+                    height=400,
+                    key="student_attempts_for_report"
+                )
+            
+            with col2:
+                final_notes = st.text_area(
+                    "Final Diagnostic Notes (The 'Gold Standard')", 
+                    height=400,
+                    key="final_diagnostic_notes"
+                )
+            
+            # Save Button
+            if st.button("Confirm & Save to Student History"):
+                print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.edited_transcription[:15]}...")
+                st.success(f"Assessment for {student_name} has been saved!")
+                st.rerun()
     
     teacher_id = st.session_state.get('user_name')  # Use user_name which contains the email
     teacher_students_list = get_all_students_by_teacher(teacher_id)
@@ -541,22 +775,22 @@ def display_assessment_form():
         # NUCLEAR FIX: Clear global cache to force total refresh
         st.cache_data.clear()
         
-        # EXPLICIT RESET: Purge previous student's data before any operations
+        # EXPLICIT RESET: Purge previous student's data before any operations (but preserve edited_transcription)
         st.session_state.student_errors = ""
-        st.session_state.edited_transcription = ""
         
         # Load student data when switching students
         if "last_loaded_student" not in st.session_state:
             st.session_state.last_loaded_student = ""
         
         if student_name and student_name != st.session_state.last_loaded_student:
-            # Clear any shadow data from previous student to prevent data leakage
+        # Clear any classroom data from previous student to prevent data leakage
             if "shadow_data" in st.session_state:
                 st.session_state.shadow_data = None
+            # Clear student errors ONLY when switching students
+            if "student_errors" in st.session_state:
+                st.session_state.student_errors = ""
             
-            # State cleanup: Clear transcription and Errors field to prevent ghosting
-            if "edited_transcription" in st.session_state:
-                st.session_state.edited_transcription = ""
+            # State cleanup: Clear raw_transcription when switching students (but preserve edited_transcription and errors during analysis)
             if "raw_transcription" in st.session_state:
                 st.session_state.raw_transcription = ""
             if "struggling_words_input" in st.session_state:
@@ -587,227 +821,96 @@ def display_assessment_form():
         
         st.divider()
         
-        # Spelling Journey History
-        if student_id:
-            with st.expander(" Spelling Journey (History)"):
-                is_admin = teacher_id == ADMIN_EMAIL
-                history = get_student_history(student_id, teacher_id=teacher_id, admin=is_admin)
-                
-                if history:
-                    st.caption(f"Showing {len(history)} recorded sessions for {student_name}")
-                    
-                    # Helper function for safe row access
-                    def safe_get(row, index, default=""):
-                        try:
-                            return row[index] if len(row) > index else default
-                        except Exception:
-                            return default
-                    
-                    history_data = []
-                    for row in history:
-                        # Skip None or empty rows
-                        if not row or not isinstance(row, (list, tuple)):
-                            continue
-                        
-                        try:
-                            # Safe date extraction with comprehensive fallbacks
-                            test_date = None
-                            date_value = safe_get(row, 3)
-                            if date_value:
-                                test_date = str(date_value)
-                            else:
-                                # Try alternative date field
-                                alt_date = safe_get(row, 4)
-                                if alt_date:
-                                    try:
-                                        test_date = str(alt_date)[:10] if len(str(alt_date)) >= 10 else str(alt_date)
-                                    except:
-                                        test_date = str(alt_date)
-                                else:
-                                    test_date = 'Unknown Date'
-                            
-                            # Safe g_scores extraction
-                            g_scores = []
-                            for i in range(5, 14):
-                                score = safe_get(row, i)
-                                # Try to convert to int if possible, otherwise keep as is
-                                try:
-                                    if score is not None:
-                                        score = int(score)
-                                    else:
-                                        score = None
-                                except (ValueError, TypeError):
-                                    score = None
-                                g_scores.append(score)
-                            
-                            # Find dominant group
-                            g_names = ["g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"]
-                            dominant_g = "-"
-                            for i, score in enumerate(g_scores):
-                                if score is not None and score > 0:
-                                    dominant_g = g_names[i]
-                                    break
-                            
-                            # Safe struggling text extraction
-                            struggling = safe_get(row, 17, "")
-                            if struggling:
-                                struggling = str(struggling)
-                            else:
-                                struggling = ""
-                            
-                            # Check for mastered status
-                            mastered = ""
-                            if all(s == 100 or s is None for s in g_scores):
-                                mastered = " 100% All Groups"
-                            
-                            # Add to history data if we have valid information
-                            if test_date or any(g_scores) or struggling:
-                                history_data.append({
-                                    "Date": test_date,
-                                    "G-Level": dominant_g.upper(),
-                                    "Struggling": struggling[:50] + "..." if len(str(struggling)) > 50 else struggling,
-                                    "Mastered": mastered
-                                })
-                        
-                        except Exception as e:
-                            # Skip this row if anything goes wrong, but continue processing others
-                            print(f"Error processing history row: {e}")
-                            continue
-                    
-                    history_df = pd.DataFrame(history_data)
-                    st.dataframe(history_df, width="stretch", hide_index=True)
-                    
-                    with st.expander(" View Full Session Details"):
-                        for i, row in enumerate(history):
-                            # Skip None or empty rows
-                            if not row or not isinstance(row, (list, tuple)):
-                                continue
-                            
-                            try:
-                                session_date = safe_get(row, 4, 'Unknown')
-                                if session_date and len(str(session_date)) >= 16:
-                                    session_date = str(session_date)[:16]
-                                elif session_date:
-                                    session_date = str(session_date)
-                                else:
-                                    session_date = 'Unknown'
-                                
-                                st.markdown(f"**Session {i+1}** - {session_date}")
-                                cols_detail = st.columns(3)
-                                cols_detail[0].metric("g0 Phonemic", f"{safe_get(row, 5, 0)}%")
-                                cols_detail[1].metric("g1 CVC", f"{safe_get(row, 6, 0)}%")
-                                cols_detail[2].metric("g2 Digraphs", f"{safe_get(row, 7, 0)}%")
-                                st.divider()
-                            except Exception as e:
-                                st.markdown(f"**Session {i+1}** - Error loading session details")
-                                continue
-                else:
-                    st.info(f"No history found for {student_name}.")
+        # Note: Spelling Journey visualization moved for future implementation
         
         st.divider()
         
         # Google Sheet Integration (moved here after student assignment)
-        st.subheader(" Shadow Data")
+        st.subheader(" Classroom Data")
         
-        # Google Sheet URL input
+        # Get current Google Sheet URL from settings
         current_settings = get_teacher_settings(teacher_id)
         sheet_url = current_settings.get('google_sheet_url', '')
         
-        with st.expander("⚙️ Configure Google Sheet", expanded=not sheet_url):
-            st.caption("Configure your Google Sheet for shadow data fetching")
-            sheet_url_input = st.text_input(
-                "Google Sheet URL",
-                value=sheet_url,
-                placeholder="https://docs.google.com/spreadsheets/d/.../edit",
-                help="Note: The Google Sheet must be set to 'Anyone with link can view' for app to access data.",
-                key="google_sheet_url_input_sidebar"
-            )
-            
-            if sheet_url_input != sheet_url:
-                # Save the updated URL
-                unit_desc = current_settings.get('unit_description', '') if current_settings else ''
-                save_teacher_settings(teacher_id, unit_desc, sheet_url_input)
-                st.toast("Google Sheet URL saved!")
-                sheet_url = sheet_url_input
-        
-        # Add checkbox for including all historical shadow data
-        include_all_shadow = st.sidebar.checkbox(
-            "Include all historical shadow data", 
-            value=False, 
-            help="Check this to ignore the last assessment date and pull all data from the Google Sheet."
-)
-        
+        # Note: CSV fetch now handles tab directly, so historical filtering is automatic  
         # Fixed comparison to handle all empty states
         if sheet_url and student_name and student_name not in [None, "None / New Student"]:
-            if st.button("Fetch Shadow Data", key="fetch_shadow_data"):
-                with st.spinner("Fetching shadow data from Google Sheet..."):
-                    try:
-                        # Get last assessment date for filtering, or None if including all history
-                        history = get_student_history(student_id, teacher_id, admin=False)
-                        if include_all_shadow:
-                            since_date = None
-                        else:
+            if st.button("Fetch Classroom Data", key="fetch_shadow_data"):
+                # Check if we already fetched data for this student
+                if st.session_state.get("last_fetched_student") == student_name and st.session_state.get("student_errors"):
+                    st.info("Data already fetched for this student")
+                else:
+                    with st.spinner("Fetching classroom data from Google Sheet..."):
+                        try:
+                            # Get last assessment date for filtering (CSV fetch handles tab directly)
+                            history = get_student_history(student_id, teacher_id, admin=False)
                             since_date = history[-1]['created_at'] if history else None
-                        
-                        # Fetch shadow data with error handling for tab-based structure
-                        shadow_data = get_sheet_data(sheet_url, student_name, since_date)
-                        
-                        # Handle error responses from get_sheet_data
-                        if isinstance(shadow_data, dict) and "error" in shadow_data:
-                            st.error(shadow_data["error"])
-                        elif shadow_data:
-                            # Remove global count - only show count within specific student's tab
-                            st.success(f"Found {len(shadow_data)} entries for {student_name}")
                             
-                            # Add to system log
-                            if "system_logs" not in st.session_state:
-                                st.session_state.system_logs = []
-                            st.session_state.system_logs.append(f"Fetched data for {student_name}")
+                            # Fetch shadow data with error handling for tab-based structure
+                            shadow_data = get_sheet_data(sheet_url, student_name, since_date)
                             
-                            # Format shadow data for Errors text area with deduplication
-                            current_errors = st.session_state.get("struggling_words_input", "")
-                            existing_entries = set()
-                            
-                            # Parse existing entries for deduplication
-                            if current_errors.strip():
-                                for line in current_errors.strip().split('\n'):
-                                    line = line.strip()
-                                    if ':' in line:
-                                        existing_entries.add(line.lower())
-                            
-                            # Format new shadow data entries as Intended:Incorrect (already in correct format)
-                            new_entries = []
-                            for entry in shadow_data:
-                                intended = entry.get('intended', '').strip()
-                                incorrect = entry.get('incorrect', '').strip()
-                                if intended and incorrect:
-                                    formatted_entry = f"{intended}:{incorrect}"
-                                    # Check for duplicates (case-insensitive)
-                                    if formatted_entry.lower() not in existing_entries:
-                                        new_entries.append(formatted_entry)
-                                        existing_entries.add(formatted_entry.lower())
-                            
-                            # Append only unique entries to existing content
-                            if new_entries:
-                                shadow_data_text = "\n".join(new_entries)
-                                if current_errors.strip():
-                                    updated_errors = current_errors.strip() + "\n" + shadow_data_text
-                                else:
-                                    updated_errors = shadow_data_text
+                            # Handle error responses from get_sheet_data
+                            if isinstance(shadow_data, dict) and "error" in shadow_data:
+                                st.error(shadow_data["error"])
+                            elif shadow_data:
+                                # Remove global count - only show count within specific student's tab
+                                st.success(f"Found {len(shadow_data)} entries for {student_name}")
                                 
-                                # Update session state and text area
-                                st.session_state.struggling_words_input = updated_errors
-                                st.session_state.shadow_data = shadow_data
-                                st.toast(f"Shadow data imported: {len(new_entries)} new entries added")
+                                # Add to system log
+                                if "system_logs" not in st.session_state:
+                                    st.session_state.system_logs = []
+                                st.session_state.system_logs.append(f"Fetched data for {student_name}")
+                                
+                                # Format classroom data for Errors text area with deduplication
+                                current_errors = st.session_state.get("struggling_words_input", "")
+                                existing_entries = set()
+                                
+                                # Parse existing entries for deduplication
+                                if current_errors.strip():
+                                    for line in current_errors.strip().split('\n'):
+                                        line = line.strip()
+                                        if ':' in line:
+                                            existing_entries.add(line.lower())
+                                
+                                # Format new classroom data entries as Intended:Incorrect (already in correct format)
+                                new_entries = []
+                                for entry in shadow_data:
+                                    intended = entry.get('intended', '').strip()
+                                    incorrect = entry.get('incorrect', '').strip()
+                                    if intended and incorrect:
+                                        formatted_entry = f"{intended}:{incorrect}"
+                                        # Check for duplicates (case-insensitive)
+                                        if formatted_entry.lower() not in existing_entries:
+                                            new_entries.append(formatted_entry)
+                                        existing_entries.add(formatted_entry.lower())
+                                
+                                # Append only unique entries to existing content
+                                if new_entries:
+                                    shadow_data_text = "\n".join(new_entries)
+                                    if current_errors.strip():
+                                        updated_errors = current_errors.strip() + "\n" + shadow_data_text
+                                    else:
+                                        updated_errors = shadow_data_text
+                                    
+                                    # Update session state and save guard variable
+                                    st.session_state.struggling_words_input = updated_errors
+                                    st.session_state.student_errors = updated_errors
+                                    st.session_state.shadow_data = shadow_data
+                                    st.session_state.last_fetched_student = student_name
+                                    print(f'DEBUG: UI State updated to: {len(updated_errors)} chars')
+                                    st.toast(f"Classroom data imported: {len(new_entries)} new entries added")
+                                else:
+                                    st.toast("Classroom data imported: no new unique entries found")
+                                    st.session_state.shadow_data = shadow_data
+                                    # Ensure student_errors is set even if no new entries
+                                    st.session_state.student_errors = current_errors
+                                    print(f'DEBUG: UI State updated to: {len(current_errors)} chars')
                             else:
-                                st.toast("Shadow data imported: no new unique entries found")
-                                st.session_state.shadow_data = shadow_data
-                        else:
-                            st.warning(f"No data found in tab '{student_name}'")
-                    
-                    except Exception as e:
-                        st.error(f"Failed to fetch shadow data: {e}")
-                        st.info("Please check your Google Sheet URL and ensure it's publicly accessible.")
+                                st.warning(f"No data found in tab '{student_name}'")
+                        
+                        except Exception as e:
+                            st.error(f"Failed to fetch shadow data: {e}")
+                            st.info("Please check your Google Sheet URL and ensure it's publicly accessible.")
         elif not sheet_url:
             st.info("💡 Add Google Sheet URL to enable shadow data fetching.")
         
@@ -1038,9 +1141,9 @@ def display_assessment_form():
         st.write("**Errors**")
         struggling_words_input = st.text_area(
             "Errors Enter words student has struggled with (Intended:Incorrect)",
-            height=100,
+            height=300,
             placeholder="e.g., 'talk:tack', 'bed:bedd', 'sit:sit', 'run:runn', 'hop:hop'",
-            key=f"errors_{student_name}"
+            key="student_errors"
         )
         
         # Mastered Words (Spelled Correctly)
@@ -1100,8 +1203,10 @@ def display_assessment_form():
             st.subheader(" AI's View (Cleaned)")
             st.image(clean_img, width="stretch")
             st.write("Step 2 reached")  # Diagnostic
-            if st.button(" Step 2: Read Handwriting"):
-                with st.spinner("AI is reading..."):
+            if st.button(" Step 2: Read Handwriting") and not st.session_state.get('processing', False):
+                st.session_state['processing'] = True
+                print('DEBUG: Handwriting Analysis Started...')
+                with st.spinner('AI is reading handwriting...'):
                     result_text = transcribe_handwriting(clean_base64)
                     
                     # Button interception check
@@ -1113,12 +1218,15 @@ def display_assessment_form():
                             cleaned_text = result_text[result_text.find("fan:"):]
                         else:
                             cleaned_text = result_text
-                        st.session_state.raw_transcription = cleaned_text
-                        st.session_state.edited_transcription = cleaned_text  # Set edited transcription to AI result
+                        
+                        # Explicit state storage
+                        st.session_state['edited_transcription'] = cleaned_text
+                        st.session_state['raw_transcription'] = cleaned_text
+                        st.session_state['processing'] = False
+                        print(f"DEBUG: Saved to state: {st.session_state['edited_transcription'][:20]}...")
                     else:
                         st.error("AI returned empty string")
-                    
-                    st.rerun()  # Force UI refresh immediately after processing
+                        st.session_state['processing'] = False
 
         with col_text:
             st.subheader(" Step 3: Verify & Edit")
@@ -1133,7 +1241,7 @@ def display_assessment_form():
             
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                height=400,
+                height=200,
                 key="edited_transcription"
             )
             
@@ -1160,48 +1268,58 @@ def display_assessment_form():
                     st.warning(" Please upload and transcribe a photo first!")
                 else:
                     with st.spinner("Running AI analysis..."):
+                        # Sync Step 3 data to Step 5 report field
+                        st.session_state['student_attempts_for_report'] = st.session_state.edited_transcription
+                        print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
+                        
                         # Get the intended words - prioritize draft data, then template
                         draft_intended = st.session_state.get("intended_words_input", "")
                         if draft_intended:
                             intended_words = draft_intended
-                        elif selected_template:
-                            intended_words = selected_template['intended_words']
                         else:
                             intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
                         
-                        # Get the teacher observations
+                        # Get teacher observations
                         teacher_observations = st.session_state.get("teacher_observations_input", "")
                         
                         # Get shadow data if available
                         shadow_data = st.session_state.get("shadow_data", [])
                         
-                        result = run_scoring_crew(student_id, edited_text, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
+                        # Debug check before AI starts
+                        print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew...")
+                        
+                        # Call the AI scoring crew
+                        analysis_result = run_scoring_crew(student_id, st.session_state.edited_transcription, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
                         
                         # Store raw AI result for debugging
-                        st.session_state.raw_ai_result = str(result)
+                        st.session_state.raw_ai_result = str(analysis_result)
                         
-                        # Extract data from AssessmentSchema object (CrewAI Pydantic result)
-                        g_scores = {}
-                        targets = []
-                        teacher_notes = ""
+                        # Extract teacher notes from result
+                        teacher_notes = getattr(analysis_result, 'teacher_notes', '')
+                        
+                        # Diagnostic confirmation
+                        print(f"DEBUG: AI Analysis complete. Teacher notes extracted: {bool(teacher_notes)}")
+                        
+                        # Save to final_diagnostic_notes session state
+                        st.session_state.final_diagnostic_notes = teacher_notes
                         
                         try:
                             # Extract G-scores from the AssessmentSchema object
                             g_scores = {
-                                'g0': getattr(result, 'g0_phonemic_awareness', 0),
-                                'g1': getattr(result, 'g1_cvc_mapping', 0),
-                                'g2': getattr(result, 'g2_digraphs', 0),
-                                'g3': getattr(result, 'g3_silent_e', 0),
-                                'g4': getattr(result, 'g4_vowel_teams', 0),
-                                'g5': getattr(result, 'g5_r_controlled', 0),
-                                'g6': getattr(result, 'g6_clusters', 0),
-                                'g7': getattr(result, 'g7_multisyllabic', 0),
-                                'g8': getattr(result, 'g8_reduction_morphology', 0)
+                                'g0': getattr(analysis_result, 'g0_phonemic_awareness', 0),
+                                'g1': getattr(analysis_result, 'g1_cvc_mapping', 0),
+                                'g2': getattr(analysis_result, 'g2_digraphs', 0),
+                                'g3': getattr(analysis_result, 'g3_silent_e', 0),
+                                'g4': getattr(analysis_result, 'g4_vowel_teams', 0),
+                                'g5': getattr(analysis_result, 'g5_r_controlled', 0),
+                                'g6': getattr(analysis_result, 'g6_clusters', 0),
+                                'g7': getattr(analysis_result, 'g7_multisyllabic', 0),
+                                'g8': getattr(analysis_result, 'g8_reduction_morphology', 0)
                             }
                             
                             # Extract teacher notes and suggested groups
-                            teacher_notes = getattr(result, 'teacher_notes', 'No analysis available yet.')
-                            suggested_groups = getattr(result, 'suggested_next_groups', [])
+                            teacher_notes = getattr(analysis_result, 'teacher_notes', 'No analysis available yet.')
+                            suggested_groups = getattr(analysis_result, 'suggested_next_groups', [])
                             targets = suggested_groups if suggested_groups else []
                             
                         except Exception as e:
@@ -1364,9 +1482,8 @@ def display_assessment_form():
         with col1:
             edited_text = st.text_area(
                 "Student's Spelling Attempts", 
-                value=st.session_state.edited_transcription,
                 height=400,
-                key="edited_text_final"
+                key="student_attempts_for_report"
             )
         
         with col2:
@@ -1382,7 +1499,7 @@ def display_assessment_form():
                 "Final Diagnostic Notes (The 'Gold Standard')", 
                 value=teacher_notes_value if teacher_notes_value and teacher_notes_value not in ["No analysis available yet.", "AI analysis incomplete. Please review manually."] else "Type your own diagnostic notes here...", 
                 height=400,
-                key="final_notes"
+                key="final_diagnostic_notes"
             )
 
         # Save Button
@@ -1413,9 +1530,12 @@ def display_assessment_form():
             # Get test template info
             test_template = selected_template.get('test_id') if selected_template else None
             
-            save_assessment(save_obj, edited_text, teacher_refinement=final_notes, 
+            save_assessment(save_obj, st.session_state.edited_transcription, teacher_refinement=final_notes, 
                         struggling_words=struggling_words, teacher_id=current_teacher_id,
                         teacher_observations=teacher_observations, test_template=test_template)
+            
+            # Verification debug print
+            print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.edited_transcription[:15]}...")
             
             st.success(f" Final assessment for {student_name} has been saved!")
             st.rerun()
