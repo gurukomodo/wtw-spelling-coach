@@ -180,7 +180,7 @@ def initialize_session_state():
     for key, default in [
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
-        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None)
+        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False)
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -197,9 +197,35 @@ def main():
     # FIRST: Initialize session state to ensure all variables exist
     initialize_session_state()
     
-    # SECOND: Check if already authenticated, bypass login screen
-    if st.session_state.get('authenticated') and st.session_state.get('user_name'):
+    # Debug auth state at top of script
+    print(f"DEBUG: Auth Check - Logged In: {st.session_state.get('logged_in')}, User: {st.session_state.get('user_email')}, All Keys: {list(st.session_state.keys())}")
+    
+    # Small delay to ensure session state is properly set
+    import time
+    time.sleep(0.1)
+    
+    # SECOND: Check if already logged in, bypass login screen
+    user_email = st.session_state.get('user_email')
+    logged_in = st.session_state.get('logged_in')
+    
+    # Robust authentication check - validate session state integrity
+    if logged_in == True and user_email and user_email.strip():
+        print(f"DEBUG: AUTHENTICATION PASSED - User: {user_email}, Routing to dashboard")
+        # Check if admin user
+        if user_email == 'komododundee@gmail.com':
+            st.session_state.is_admin = True
         show_teacher_dashboard()
+        return
+    elif logged_in == False and not user_email:
+        print(f"DEBUG: User not logged in, showing login screen")
+    else:
+        print(f"DEBUG: AUTHENTICATION INCONSISTENCY - logged_in: {logged_in}, user_email: {user_email}")
+        # Clear inconsistent state
+        st.session_state.clear()
+        # Re-initialize session state
+        initialize_session_state()
+        # Show login screen as fallback
+        show_registration_page()
         return
     
     # THIRD: Check URL query params for parked login status
@@ -210,6 +236,9 @@ def main():
         st.session_state.email = email
         st.session_state.user_name = email
         st.session_state.authenticated = True
+        st.session_state.logged_in = True
+        st.session_state.user_email = email  # Set both for consistency
+        print(f"DEBUG: LOGIN SET - Email: {email}, All Keys: {list(st.session_state.keys())}")
         # Show dashboard immediately
         show_teacher_dashboard()
         return
@@ -219,7 +248,7 @@ def main():
     migrate_legacy_profiles()
     
     # Route based on authentication
-    if not st.session_state.get('authenticated'):
+    if not st.session_state.get('logged_in'):
         show_registration_page()
 
 # =============================================================================
@@ -238,26 +267,33 @@ def show_registration_page():
 
     with col1:
         st.subheader("Returning Coach")
+        print(f"DEBUG: Teachers in database: {len(existing_teachers) if existing_teachers else 0}")
         if existing_teachers:
             # Create a list of "Name (Email)" for the dropdown
             teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
-            selected = st.selectbox("Choose your account:", ["Select..."] + teacher_options, key='reg_teacher_select')
+            selected = st.selectbox("Choose your account:", teacher_options, key='reg_teacher_select')
+            print(f"DEBUG: Selected teacher: {selected}")
             
-            if selected != "Select...":
-                if st.button("Login"):
-                    # Extract email from the string "Name (email@test.com)"
-                    email = selected.split('(')[-1].replace(')', '')
-                    name = selected.split(' (')[0]
-                    
-                    st.session_state.authenticated = True
-                    st.session_state.user_name = email  # Store email as user_name
-                    st.session_state.email = name  # Store name as email (this seems backwards but matches current usage)
-                    st.session_state.role = 'teacher'
-                    
-                    # Park login status in URL for persistence
-                    st.query_params["email"] = email
-                    st.query_params["login"] = email
-                    st.rerun()
+            # Always show login button
+            if st.button("Login"):
+                print(f"DEBUG: Login button clicked for: {selected}")
+                # Extract email from the string "Name (email@test.com)"
+                email = selected.split('(')[-1].replace(')', '')
+                name = selected.split(' (')[0]
+                
+                st.session_state.authenticated = True
+                st.session_state.user_name = email  # Store email as user_name
+                st.session_state.email = name  # Store name as email (this seems backwards but matches current usage)
+                st.session_state.logged_in = True  # Set logged_in flag
+                st.session_state.user_email = email  # Set user_email for consistency
+                st.session_state.role = 'teacher'
+                
+                print(f"DEBUG: LOGIN SUCCESS - Setting logged_in=True, user_email={email}")
+                
+                # Park login status in URL for persistence
+                st.query_params["email"] = email
+                st.query_params["login"] = email
+                st.rerun()
         else:
             st.info("No accounts found yet. Register on the right!")
 
@@ -292,10 +328,12 @@ def show_teacher_dashboard():
     st.sidebar.image("logo.svg", width=200)
     st.sidebar.success(f"👤 Logged in: {st.session_state.user_name}")
     
-    if st.sidebar.button("Log Out"):
-        st.session_state.authenticated = False
-        st.session_state.role = None
-        st.session_state.clear()  # Clear all session state
+    if st.sidebar.button("Log Out", key="logout_button"):
+        # Nuclear Logout - complete key deletion
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        # Force app back to login screen
         st.rerun()
     
     # Sidebar navigation using radio buttons
@@ -321,9 +359,11 @@ def display_class_page():
     st.header("My Class")
     
     # Get current teacher's students
-    current_teacher_email = st.session_state.get('email')
+    current_teacher_email = st.session_state.get('user_email') or st.session_state.get('email')
     profiles = load_profiles()
     teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
+    
+    print(f'DEBUG: Database returned {len(teacher_students)} students for user {current_teacher_email}')
     
     if not teacher_students:
         st.info("No students assigned to your class yet.")
