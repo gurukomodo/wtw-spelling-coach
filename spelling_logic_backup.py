@@ -30,16 +30,16 @@ def initialize_model():
     
     if model_name:
         try:
-            # New GenAI SDK uses client.generate_content() instead of GenerativeModel
-            return model_name  # Return model name for use with client
+            model_obj = genai.GenerativeModel(model_name)
+            return model_obj
         except Exception as e:
             st.warning(f"Model {model_name} not available: {e}")
     
     # Try preferred models in order
     for fallback_model in get_model_fallbacks():
         try:
-            # New GenAI SDK uses client.generate_content() instead of GenerativeModel
-            return fallback_model  # Return model name for use with client
+            model_obj = genai.GenerativeModel(fallback_model)
+            return model_obj
         except Exception as e:
             continue
     
@@ -218,15 +218,10 @@ def transcribe_handwriting(base64_image):
     
     response = completion(
         model="groq/meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=[
-            {
-                "role": "user", 
-                "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            } # <--- This closing brace was missing
-        ],
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": system_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+        ]],
         temperature=0.0 # Keep this at 0.0 for zero creativity!
     )
     

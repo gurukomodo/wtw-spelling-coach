@@ -520,7 +520,16 @@ def get_all_teachers():
     ''')
     results = cursor.fetchall()
     conn.close()
-    return [{"email": row[0], "name": row[1] or row[0].split('@')[0]} for row in results]
+    teachers = []
+    for row in results:
+        email = row[0]
+        name = row[1]
+        # Handle case where teacher_name is None or empty
+        if not name or not name.strip():
+            # Extract name from email if name is None or empty
+            name = email.split('@')[0] if '@' in email else email
+        teachers.append({"email": email, "name": name})
+    return teachers
 
 # ============================================================
 # ORPHANED STUDENTS

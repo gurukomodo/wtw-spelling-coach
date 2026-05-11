@@ -212,7 +212,7 @@ def main():
     if logged_in == True and user_email and user_email.strip():
         print(f"DEBUG: AUTHENTICATION PASSED - User: {user_email}, Routing to dashboard")
         # Check if admin user
-        if user_email == 'komododundee@gmail.com':
+        if st.session_state.get('user_email') == 'komododundee@gmail.com':
             st.session_state.is_admin = True
         show_teacher_dashboard()
         return
@@ -249,7 +249,11 @@ def main():
     
     # Route based on authentication
     if not st.session_state.get('logged_in'):
-        show_registration_page()
+        # Check if user is trying to login (has selected a teacher)
+        if st.session_state.get('reg_teacher_select'):
+            show_login_page()
+        else:
+            show_registration_page()
 
 # =============================================================================
 # PAGE: REGISTRATION
@@ -270,33 +274,31 @@ def show_registration_page():
         print(f"DEBUG: Teachers in database: {len(existing_teachers) if existing_teachers else 0}")
         if existing_teachers:
             # Create a list of "Name (Email)" for the dropdown
-            teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
+            teacher_options = []
+            for t in existing_teachers:
+                if t['name'] and t['name'].strip():
+                    name = t['name']
+                else:
+                    # Extract name from email if name is None or empty
+                    name = t['email'].split('@')[0]
+                teacher_options.append(f"{name} ({t['email']})")
+
+            print(f"DEBUG: Fixed teacher options: {teacher_options}")
             selected = st.selectbox("Choose your account:", teacher_options, key='reg_teacher_select')
             print(f"DEBUG: Selected teacher: {selected}")
-            
-            # Always show login button
-            if st.button("Login"):
-                print(f"DEBUG: Login button clicked for: {selected}")
-                # Extract email from the string "Name (email@test.com)"
-                email = selected.split('(')[-1].replace(')', '')
-                name = selected.split(' (')[0]
-                
-                st.session_state.authenticated = True
-                st.session_state.user_name = email  # Store email as user_name
-                st.session_state.email = name  # Store name as email (this seems backwards but matches current usage)
-                st.session_state.logged_in = True  # Set logged_in flag
-                st.session_state.user_email = email  # Set user_email for consistency
-                st.session_state.role = 'teacher'
-                
-                print(f"DEBUG: LOGIN SUCCESS - Setting logged_in=True, user_email={email}")
-                
-                # Park login status in URL for persistence
-                st.query_params["email"] = email
-                st.query_params["login"] = email
-                st.rerun()
+            print(f"DEBUG: Teacher options: {teacher_options}")
+            print(f"DEBUG: Selected type: {type(selected)}, Length: {len(selected) if selected else 0}")
+            print(f"DEBUG: Session state before login: {st.session_state}")
         else:
             st.info("No accounts found yet. Register on the right!")
-
+    
+    # Login button outside column layout to avoid form interference
+    if existing_teachers and st.session_state.get('reg_teacher_select'):
+        if st.button("Login →", key="go_to_login", use_container_width=True):
+            print("DEBUG: Navigate to login page - BUTTON CLICKED!")
+            st.success("Button clicked! Navigating to login...")
+            st.rerun()
+    
     with col2:
         st.subheader("New Coach")
         with st.form("registration_form", clear_on_submit=True, enter_to_submit=False):
@@ -318,6 +320,91 @@ def show_registration_page():
                     st.query_params["email"] = new_email
                     st.query_params["login"] = new_email
                     st.rerun()
+
+# =============================================================================
+# PAGE: LOGIN
+# =============================================================================
+def show_login_page():
+    """Separate login page for existing teachers."""
+    st.image("logo.svg", width=200)
+    st.title("Teacher Login")
+    
+    from database_manager import get_all_teachers
+    existing_teachers = get_all_teachers()
+    
+    if existing_teachers:
+        # Create a list of "Name (Email)" for the dropdown
+        teacher_options = []
+        for t in existing_teachers:
+            if t['name'] and t['name'].strip():
+                name = t['name']
+            else:
+                # Extract name from email if name is None or empty
+                name = t['email'].split('@')[0]
+            teacher_options.append(f"{name} ({t['email']})")
+
+        print(f"DEBUG: Login page - Teacher options: {teacher_options}")
+        
+        selected_teacher = st.selectbox("Select your account:", teacher_options, key='login_teacher_select')
+        print(f"DEBUG: Login page - Selected teacher: {selected_teacher}")
+        
+        # Login button
+        if st.button("Login", key="login_button"):
+            print(f"DEBUG: Login button clicked for: {selected_teacher}")
+            print(f"DEBUG: Session state before login: {st.session_state}")
+            
+            # Extract email from string "Name (email@test.com)"
+            if '(' in selected_teacher and ')' in selected_teacher:
+                email = selected_teacher.split('(')[-1].replace(')', '')
+                name = selected_teacher.split(' (')[0]
+                print(f"DEBUG: Extracted from parentheses - Name: {name}, Email: {email}")
+            else:
+                # Handle case where selection might be just an email
+                if '@' in selected_teacher:
+                    email = selected_teacher
+                    name = selected_teacher.split('@')[0]
+                    print(f"DEBUG: Extracted from email - Name: {name}, Email: {email}")
+                else:
+                    email = selected_teacher
+                    name = selected_teacher
+                    print(f"DEBUG: Using as-is - Name: {name}, Email: {email}")
+        
+            print(f"DEBUG: Parsed from selection - Name: {name}, Email: {email}")
+            
+            # Use the extracted email directly as actual_email
+            actual_email = email
+            
+            print(f"DEBUG: Teacher lookup - Using extracted email: {actual_email}")
+            print(f"DEBUG: Teacher lookup - Name: {name}, Found email: {actual_email}")
+            print(f"DEBUG: Teacher lookup completed successfully")
+            
+            st.session_state.authenticated = True
+            st.session_state.user_name = actual_email or email  # Store actual email
+            st.session_state.email = actual_email or email  # Store actual email
+            st.session_state.logged_in = True  # Set logged_in flag
+            st.session_state.user_email = actual_email or email  # Set user_email for consistency
+            st.session_state.role = 'teacher'
+            
+            print(f"DEBUG: LOGIN SUCCESS - Setting logged_in=True, user_email={email}")
+            print(f"DEBUG: VERIFYING ADMIN - Is {email} == komododundee@gmail.com? {email == 'komododundee@gmail.com'}")
+            
+            # Clear the registration selection to avoid confusion
+            if 'reg_teacher_select' in st.session_state:
+                del st.session_state['reg_teacher_select']
+            
+            # Park login status in URL for persistence
+            st.query_params["email"] = email
+            st.query_params["login"] = email
+            st.rerun()
+    
+    else:
+        st.info("No accounts found. Please register first.")
+        
+    # Back to registration button
+    if st.button("← Back to Registration", key="back_to_reg"):
+        if 'reg_teacher_select' in st.session_state:
+            del st.session_state['reg_teacher_select']
+        st.rerun()
 
 # =============================================================================
 # PAGE: TEACHER DASHBOARD (with sidebar navigation)
@@ -363,6 +450,10 @@ def display_class_page():
     profiles = load_profiles()
     teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
     
+    print(f'DEBUG: Fetching students for email: {current_teacher_email}')
+    print(f'DEBUG: Available profiles: {list(profiles.keys())}')
+    matching_profiles = [sid for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email]
+    print(f'DEBUG: Matching profiles: {matching_profiles}')
     print(f'DEBUG: Database returned {len(teacher_students)} students for user {current_teacher_email}')
     
     if not teacher_students:
@@ -1882,7 +1973,7 @@ def display_admin_page():
             all_teachers_for_assign = get_all_teachers()
             if all_teachers_for_assign:
                 # Show teacher names in dropdown
-                teacher_options = [{"email": t["email"], "name": t["name"]} for t in all_teachers_for_assign]
+                teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
                 teacher_display_options = [f"{t['name']} ({t['email']})" for t in teacher_options]
                 
                 col_bulk, col_btn = st.columns([3, 1])
