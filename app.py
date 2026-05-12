@@ -115,11 +115,13 @@ def load_profiles():
                 reader = csv.DictReader(f)
                 for row in reader:
                     sid = row.get("Student ID")
+                    teacher_id = row.get("teacher_id", st.session_state.get("user_email"))
                     if sid:
                         profiles[sid] = {
                             "struggles": row.get("Struggles", ""),
                             "mastered": row.get("Mastered Words", ""),
-                            "target_group": row.get("Target_Group", "g1")
+                            "target_group": row.get("Target_Group", "g1"),
+                            "teacher_id": teacher_id
                         }
         except Exception as e:
             st.error(f"Error loading profiles: {e}")
@@ -128,18 +130,19 @@ def load_profiles():
 def save_profile(student_id, struggles, mastered, target_group):
     """Save/Update a student profile in the CSV."""
     profiles = load_profiles()
-    profiles[student_id] = {"struggles": struggles, "mastered": mastered, "target_group": target_group}
+    profiles[student_id] = {"struggles": struggles, "mastered": mastered, "target_group": target_group, "teacher_id": st.session_state.get("user_email")}
     
     try:
         with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=["Student ID", "Struggles", "Mastered Words", "Target_Group"])
+            writer = csv.DictWriter(f, fieldnames=["Student ID", "Struggles", "Mastered Words", "Target_Group", "teacher_id"])
             writer.writeheader()
             for sid, data in profiles.items():
                 writer.writerow({
                     "Student ID": sid,
                     "Struggles": data["struggles"],
                     "Mastered Words": data["mastered"],
-                    "Target_Group": data["target_group"]
+                    "Target_Group": data["target_group"],
+                    "teacher_id": data["teacher_id"]
                 })
     except Exception as e:
         st.error(f"Error saving profile: {e}")
@@ -174,13 +177,14 @@ def initialize_session_state():
     if 'role' not in st.session_state:
         st.session_state.role = None
     
-    if "user_email" not in st.session_state and "email" not in st.session_state:
-        st.session_state.email = "admin@example.com"
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = None
     
     for key, default in [
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
-        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False)
+        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False), ("logged_in", False), ("user_email", None),
+        ("authenticated", False), ("role", None),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -192,116 +196,66 @@ def initialize_session_state():
 # MAIN ROUTER
 # =============================================================================
 def main():
-    """Main router that checks authentication and routes to appropriate page."""
-    
-    # FIRST: Initialize session state to ensure all variables exist
     initialize_session_state()
     
-    # Debug auth state at top of script
-    print(f"DEBUG: Auth Check - Logged In: {st.session_state.get('logged_in')}, User: {st.session_state.get('user_email')}, All Keys: {list(st.session_state.keys())}")
-    
-    # Small delay to ensure session state is properly set
-    import time
-    time.sleep(0.1)
-    
-    # SECOND: Check if already logged in, bypass login screen
-    user_email = st.session_state.get('user_email')
-    logged_in = st.session_state.get('logged_in')
-    
-    # Robust authentication check - validate session state integrity
-    if logged_in == True and user_email and user_email.strip():
-        print(f"DEBUG: AUTHENTICATION PASSED - User: {user_email}, Routing to dashboard")
-        # Check if admin user
-        if st.session_state.get('user_email') == 'komododundee@gmail.com':
-            st.session_state.is_admin = True
-        show_teacher_dashboard()
-        return
-    elif logged_in == False and not user_email:
-        print(f"DEBUG: User not logged in, showing login screen")
-    else:
-        print(f"DEBUG: AUTHENTICATION INCONSISTENCY - logged_in: {logged_in}, user_email: {user_email}")
-        # Clear inconsistent state
-        st.session_state.clear()
-        # Re-initialize session state
-        initialize_session_state()
-        # Show login screen as fallback
-        show_registration_page()
-        return
-    
-    # THIRD: Check URL query params for parked login status
-    query_params = st.query_params
-    if "email" in query_params or "login" in query_params:
-        # Park login status in URL for persistence
-        email = query_params.get("email") or query_params.get("login")
-        st.session_state.email = email
-        st.session_state.user_name = email
-        st.session_state.authenticated = True
-        st.session_state.logged_in = True
-        st.session_state.user_email = email  # Set both for consistency
-        print(f"DEBUG: LOGIN SET - Email: {email}, All Keys: {list(st.session_state.keys())}")
-        # Show dashboard immediately
-        show_teacher_dashboard()
-        return
-    
+    # 1. Catch the Interceptor (Login button click)
+    if st.session_state.get('login_button'):
+        selection = st.session_state.get('login_teacher_select')
+        if selection:
+            # logic to define both 'name' and 'email' from the selection string
+            if '(' in selection:
+                # Splits "Glen Pamment (email@test.com)" into name and email
+                name = selection.split(' (')[0].strip()
+                email = selection.split('(')[-1].replace(')', '').strip()
+            else:
+                # Fallback if the string doesn't follow the "Name (Email)" format
+                name = selection.strip()
+                email = selection.strip()
 
-    # Check for legacy data and migrate it immediately after DB is ready
-    migrate_legacy_profiles()
-    
-    # Route based on authentication
-    if not st.session_state.get('logged_in'):
-        # Check if user is trying to login (has selected a teacher)
-        if st.session_state.get('reg_teacher_select'):
-            show_login_page()
-        else:
-            show_registration_page()
+            # Now that both variables are defined, save them to session_state
+            st.session_state.logged_in = True
+            st.session_state.user_email = email
+            st.session_state.user_name = name  # This won't error now
+            st.session_state.authenticated = True
+            
+            if email == 'komododundee@gmail.com':
+                st.session_state.is_admin = True
+                
+            st.rerun()
+
+    # 2. Check for URL Persistence
+    if st.query_params.get("email"):
+        st.session_state.logged_in = True
+        st.session_state.user_email = st.query_params.get("email")
+
+    # 3. Final Routing
+    if st.session_state.get('logged_in'):
+        show_teacher_dashboard()
+    elif st.session_state.get('go_to_login'):
+        show_login_page()
+    else:
+        show_registration_page()
 
 # =============================================================================
 # PAGE: REGISTRATION
 # =============================================================================
 def show_registration_page():
-
     st.image("logo.svg", width=200)
     st.title("Welcome to UnBoxEd Spelling Coach")
-    
-    # 1. Get existing teachers from the database
-    from database_manager import get_all_teachers
-    existing_teachers = get_all_teachers()
     
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("Returning Coach")
-        print(f"DEBUG: Teachers in database: {len(existing_teachers) if existing_teachers else 0}")
-        if existing_teachers:
-            # Create a list of "Name (Email)" for the dropdown
-            teacher_options = []
-            for t in existing_teachers:
-                if t['name'] and t['name'].strip():
-                    name = t['name']
-                else:
-                    # Extract name from email if name is None or empty
-                    name = t['email'].split('@')[0]
-                teacher_options.append(f"{name} ({t['email']})")
-
-            print(f"DEBUG: Fixed teacher options: {teacher_options}")
-            selected = st.selectbox("Choose your account:", teacher_options, key='reg_teacher_select')
-            print(f"DEBUG: Selected teacher: {selected}")
-            print(f"DEBUG: Teacher options: {teacher_options}")
-            print(f"DEBUG: Selected type: {type(selected)}, Length: {len(selected) if selected else 0}")
-            print(f"DEBUG: Session state before login: {st.session_state}")
-        else:
-            st.info("No accounts found yet. Register on the right!")
-    
-    # Login button outside column layout to avoid form interference
-    if existing_teachers and st.session_state.get('reg_teacher_select'):
-        if st.button("Login →", key="go_to_login", use_container_width=True):
-            print("DEBUG: Navigate to login page - BUTTON CLICKED!")
-            st.success("Button clicked! Navigating to login...")
+        st.info("Already have an account? Click below to select your profile and log in.")
+        # This is the trigger for your new main() routing logic
+        if st.button("Go to Login Page →", use_container_width=True):
+            st.session_state.go_to_login = True
             st.rerun()
     
     with col2:
         st.subheader("New Coach")
-        with st.form("registration_form", clear_on_submit=True, enter_to_submit=False):
+        with st.form("registration_form", clear_on_submit=True):
             new_name = st.text_input("Full Name")
             new_email = st.text_input("Email Address")
             submit_button = st.form_submit_button("Register & Log In")
@@ -311,15 +265,16 @@ def show_registration_page():
                     from database_manager import register_teacher
                     register_teacher(new_email, new_name)
                     
+                    # Log them in immediately after registration
                     st.session_state.authenticated = True
-                    st.session_state.user_name = new_email  # Store email as user_name
-                    st.session_state.email = new_name  # Store name as email (this seems backwards but matches current usage)
+                    st.session_state.user_email = new_email
+                    st.session_state.logged_in = True
                     st.session_state.role = 'teacher'
                     
-                    # Park login status in URL for persistence
                     st.query_params["email"] = new_email
-                    st.query_params["login"] = new_email
                     st.rerun()
+                else:
+                    st.error("Please provide both name and email.")
 
 # =============================================================================
 # PAGE: LOGIN
@@ -380,7 +335,7 @@ def show_login_page():
             
             st.session_state.authenticated = True
             st.session_state.user_name = actual_email or email  # Store actual email
-            st.session_state.email = actual_email or email  # Store actual email
+            st.session_state.user_email = actual_email or email  # Store actual email
             st.session_state.logged_in = True  # Set logged_in flag
             st.session_state.user_email = actual_email or email  # Set user_email for consistency
             st.session_state.role = 'teacher'
@@ -430,7 +385,7 @@ def show_teacher_dashboard():
     migrate_legacy_profiles()
     
     # Get current teacher email (standardized)
-    current_teacher_email = st.session_state.get('email')
+    current_teacher_email = st.session_state.get('user_email')
     
     # Route to appropriate page function
     if page == "Class":
@@ -442,11 +397,11 @@ def show_teacher_dashboard():
 # COMPONENT: CLASS PAGE (student-centric view)
 # =============================================================================
 def display_class_page():
-    """Display the Class page with simple student list and navigation to detail view."""
+    """Display the Class page with compact student list and interactive navigation."""
     st.header("My Class")
     
     # Get current teacher's students
-    current_teacher_email = st.session_state.get('user_email') or st.session_state.get('email')
+    current_teacher_email = st.session_state.get('user_email')
     profiles = load_profiles()
     teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
     
@@ -460,104 +415,109 @@ def display_class_page():
         st.info("No students assigned to your class yet.")
         return
     
-    # Create simple table with Name and G-Level
+    # Check if a student is selected for detail view
+    selected_student_id = st.session_state.get('selected_student_id')
+    
+    if selected_student_id and st.session_state.get('show_student_detail'):
+        # Show student detail view
+        display_student_detail_view(selected_student_id)
+        return
+    
+    # Display compact table of students
     st.subheader("Students")
     
-    # Prepare data for display
-    student_data = []
+    # Group records by student_id to deduplicate
+    unique_students = {}
     for student_id, student_info in teacher_students.items():
-        student_data.append({
-            "Name": student_info.get('real_name', 'Unknown'),
-            "G-Level": student_info.get('target_group', 'g1'),
-            "Student ID": student_id
-        })
+        if student_id not in unique_students:
+            unique_students[student_id] = student_info
     
-    # Sort by name
-    student_data.sort(key=lambda x: x["Name"])
+    # Sort students by name for consistent display
+    sorted_students = sorted(unique_students.items(), key=lambda x: get_student_name(current_teacher_email, x[0]) or x[0])
     
-    # Display as interactive table
-    for i, student in enumerate(student_data):
-        col1, col2 = st.columns([3, 1])
+    for student_id, student_info in sorted_students:
+        # Resolve student name with proper fallback
+        student_name = get_student_name(current_teacher_email, student_id)
+        if not student_name:
+            # Use anonymized code if no real name exists
+            student_name = f"Student {student_id[-4:]}"  # Last 4 chars as code
+        
+        # Create clean table layout with st.columns([2, 1])
+        col1, col2 = st.columns([2, 1])
         
         with col1:
             # Make name clickable for detail view
-            if st.button(student["Name"], key=f"student_{student['Student ID']}"):
-                st.session_state.selected_student = student['Student ID']
+            if st.button(student_name, key=f"select_student_{student_id}", use_container_width=True):
+                st.session_state.selected_student_id = student_id
                 st.session_state.show_student_detail = True
                 st.rerun()
         
         with col2:
-            st.markdown(f"**{student['G-Level']}**")
-        
-        if i < len(student_data) - 1:
-            st.divider()
+            # Display student's group
+            group = student_info.get('target_group', 'g1')
+            st.markdown(f"**Group {group[-1]}**")  # Extract number from 'g1', 'g2', etc.
     
     # Check if we should show student detail view
     if st.session_state.get('show_student_detail', False) and st.session_state.get('selected_student'):
-        display_student_detail_view()
+        display_student_detail_view(st.session_state.selected_student)
 
-def display_student_detail_view():
-    """Display detailed view for a selected student with assessment workflow."""
-    selected_student_id = st.session_state.selected_student
+def display_student_detail_view(student_id):
+    """Display simplified detail view for a selected student."""
     profiles = load_profiles()
-    student_info = profiles.get(selected_student_id, {})
+    student_info = profiles.get(student_id, {})
     
-    # Back button
-    if st.button("← Back to Class"):
+    if not student_info:
+        st.error("Student not found")
+        return
+    
+    # Get student name with proper fallback
+    current_teacher_email = st.session_state.get('user_email')
+    student_name = get_student_name(current_teacher_email, student_id) or f"Student {student_id}"
+    
+    # Update header to show selected student
+    st.header(f"Student Detail: {student_name}")
+    
+    # Back button to return to list
+    if st.button("← Back to Class", key="back_to_class"):
         st.session_state.show_student_detail = False
-        st.session_state.selected_student = None
+        st.session_state.selected_student_id = None
         st.rerun()
     
-    # Student header
-    st.header(f"Student Detail: {student_info.get('real_name', 'Unknown')}")
+    # Display only specific word analysis data used for coaching
+    st.subheader("Word Analysis Data")
     
-    # Student info display
-    col1, col2, col3 = st.columns(3)
+    # Get current assessment data for this student
+    struggles = student_info.get('struggles', '').split(',') if student_info.get('struggles') else []
+    mastered = student_info.get('mastered', '').split(',') if student_info.get('mastered') else []
+    target_group = student_info.get('target_group', 'g1')
     
-    with col1:
-        st.metric("Current G-Level", student_info.get('target_group', 'g1'))
+    # Display current struggling words
+    if struggles:
+        st.write("**Current Struggling Words:**")
+        for word in struggles:
+            if word.strip():
+                st.write(f"• {word.strip()}")
     
-    with col2:
-        st.metric("Struggles", len(student_info.get('struggles', '').split(',')) if student_info.get('struggles') else 0)
+    # Display current mastered words
+    if mastered:
+        st.write("**Current Mastered Words:**")
+        for word in mastered:
+            if word.strip():
+                st.write(f"• {word.strip()}")
     
-    with col3:
-        st.metric("Mastered", len(student_info.get('mastered', '').split(',')) if student_info.get('mastered') else 0)
-    
-    # Display current errors and mastered words
-    st.subheader("Current Status")
-    
-    errors_col, mastered_col = st.columns(2)
-    
-    with errors_col:
-        st.write("**Struggling Words:**")
-        errors = student_info.get('struggles', '')
-        if errors:
-            for error in errors.split(','):
-                if error.strip():
-                    st.write(f"• {error.strip()}")
-        else:
-            st.write("None recorded")
-    
-    with mastered_col:
-        st.write("**Mastered Words:**")
-        mastered = student_info.get('mastered', '')
-        if mastered:
-            for word in mastered.split(','):
-                if word.strip():
-                    st.write(f"• {word.strip()}")
-        else:
-            st.write("None recorded")
+    if not struggles and not mastered:
+        st.info("No word analysis data recorded yet.")
     
     st.divider()
     
     # Add Assessment section with Step 1-5 workflow
     st.subheader("Add Assessment")
-    display_assessment_workflow(selected_student_id, student_info.get('real_name', 'Unknown'))
+    display_assessment_workflow(student_id, student_name)
 
 def display_assessment_workflow(student_id, student_name):
     """Display the complete Step 1-5 assessment workflow."""
     # Lock classroom data to selected student
-    current_teacher_email = st.session_state.get('email')
+    current_teacher_email = st.session_state.get('user_email')
     current_settings = get_teacher_settings(current_teacher_email)
     sheet_url = current_settings.get('google_sheet_url', '')
     
@@ -1172,7 +1132,7 @@ def display_assessment_form():
         
         # Class Settings
         st.header(" Class Settings")
-        current_settings = get_teacher_settings(st.session_state.email)
+        current_settings = get_teacher_settings(st.session_state.user_email)
         current_unit_desc = current_settings.get('unit_description', '') if current_settings else ''
         current_sheet_url = current_settings.get('google_sheet_url', '') if current_settings else ''
         
@@ -1199,11 +1159,11 @@ def display_assessment_form():
         )
         
         if sheet_url != current_sheet_url:
-            save_teacher_settings(st.session_state.email, unit_desc, sheet_url)
+            save_teacher_settings(st.session_state.user_email, unit_desc, sheet_url)
             st.toast("Google Sheet URL saved!")
         
         if unit_desc != current_unit_desc:
-            save_teacher_settings(st.session_state.email, unit_desc)
+            save_teacher_settings(st.session_state.user_email, unit_desc)
             st.session_state.unit_description = unit_desc
             st.toast("Unit description saved!")
         
@@ -1678,7 +1638,7 @@ def display_admin_page():
     """Display the Admin dashboard with factory reset and student allocation tools."""
     ADMIN_EMAIL = "komododundee@gmail.com"
     
-    if st.session_state.get('email', '').lower().strip() != ADMIN_EMAIL.lower().strip():
+    if st.session_state.get('user_email', '').lower().strip() != ADMIN_EMAIL.lower().strip():
         st.error(" Admin access required.")
         return
     
@@ -1760,6 +1720,51 @@ def display_admin_page():
                 result = fix_all_teacher_ids()
                 st.success(f" Fixed! Synced {result['students_synced']} students.")
                 st.rerun()
+    
+    st.markdown("---")
+    
+    # Identity Manager
+    with st.expander(" Identity Manager"):
+        st.subheader(" Student Identity Management")
+        
+        # Get all unique student IDs from database
+        from database_manager import get_all_student_ids
+        all_student_ids = get_all_student_ids()
+        
+        if all_student_ids:
+            st.write(f"**Found {len(all_student_ids)} unique student IDs:**")
+            
+            # Create manual mapping interface
+            selected_code = st.selectbox("Select student code to map:", all_student_ids, key="identity_code_select")
+            
+            col_name, col_save = st.columns([2, 1])
+            
+            with col_name:
+                student_name = st.text_input("Enter student's real name:", key="student_name_input", placeholder="e.g., John Smith")
+            
+            with col_save:
+                if st.button("Save Mapping", type="primary", use_container_width=True):
+                    if student_name.strip():
+                        # Save to student_identity table
+                        from database_manager import save_student_identity
+                        save_student_identity(st.session_state.get('user_email'), selected_code, student_name.strip(), None)
+                        st.success(f"Saved: {selected_code} → {student_name.strip()}")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a student name.")
+            
+            # Show current mappings
+            st.markdown("**Current Identity Mappings:**")
+            from database_manager import get_all_student_identities
+            identities = get_all_student_identities()
+            
+            if identities:
+                for identity in identities:
+                    st.write(f"• **{identity['student_id']}** → {identity['real_name']}")
+            else:
+                st.info("No identity mappings found yet.")
+        else:
+            st.info("No student IDs found in database.")
     
     st.markdown("---")
     

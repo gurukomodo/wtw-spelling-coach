@@ -820,6 +820,55 @@ def get_anonymized_history(student_name):
     return anonymized
 
 
+def get_all_student_ids():
+    """Get all unique student IDs from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT DISTINCT student_id FROM student_identity
+        ORDER BY student_id
+    ''')
+    
+    student_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return student_ids
+
+def get_all_student_identities():
+    """Get all student identity mappings from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT student_id, real_name, pseudonym 
+        FROM student_identity
+        ORDER BY student_id
+    ''')
+    
+    identities = []
+    for row in cursor.fetchall():
+        identities.append({
+            "student_id": row[0],
+            "real_name": row[1],
+            "pseudonym": row[2]
+        })
+    
+    conn.close()
+    return identities
+
+def save_student_identity(teacher_id, student_id, real_name, pseudonym):
+    """Save or update a student identity mapping."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO student_identity (teacher_id, student_id, real_name, pseudonym)
+        VALUES (?, ?, ?, ?)
+    ''', (teacher_id, student_id, real_name, pseudonym))
+    
+    conn.commit()
+    conn.close()
+
 def get_all_students_by_teacher(teacher_email):
     """
     BUG FIX: Returns ALL students associated with a teacher's email.

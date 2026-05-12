@@ -16,11 +16,14 @@ api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 if api_key:
     # Check if OTEL_SDK_DISABLED environment variable is set
     if os.environ.get("OTEL_SDK_DISABLED"):
-        print("DEBUG: OTEL_SDK_DISABLED is set, skipping genai.configure()")
+        print("DEBUG: OTEL_SDK_DISABLED is set, skipping client initialization")
+        client = None
     else:
-        genai.configure(api_key=api_key)
+        client = genai.Client(api_key=api_key)
+        print("DEBUG: Initialized new google.genai client")
 else:
     print("ERROR: No GOOGLE_API_KEY found in st.secrets or environment variables")
+    client = None
 
 # Use configurable model with fallback logic
 def initialize_model():
@@ -121,7 +124,7 @@ Keep the tone professional, encouraging, and actionable.
 """
     
     try:
-        response = model.generate_content(prompt)
+        response = client.generate_content(model=model, contents=prompt)
         return response.text
     except Exception as e:
         return f"AI Coaching currently unavailable: {str(e)}"
