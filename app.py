@@ -379,7 +379,7 @@ def show_teacher_dashboard():
         st.rerun()
     
     # Sidebar navigation using radio buttons
-    page = st.sidebar.radio("Navigation", ["Class", "Admin"])
+    page = st.sidebar.radio("Navigation", ["Class", "Student", "Admin"])
     
     # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
@@ -387,9 +387,29 @@ def show_teacher_dashboard():
     # Get current teacher email (standardized)
     current_teacher_email = st.session_state.get('user_email')
     
+    # Student selector in sidebar (shown when Student page is active)
+    selected_student_id = None
+    if page == "Student":
+        profiles = load_profiles()
+        teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
+        
+        student_options = {}
+        for sid, data in sorted(teacher_students.items(), key=lambda x: get_student_name(current_teacher_email, x[0]) or x[0]):
+            name = get_student_name(current_teacher_email, sid) or f"Student {sid[-4:]}"
+            student_options[name] = sid
+        
+        if student_options:
+            selected_name = st.sidebar.selectbox("Select Student", options=list(student_options.keys()))
+            selected_student_id = student_options[selected_name]
+    
     # Route to appropriate page function
     if page == "Class":
         display_class_page()
+    elif page == "Student":
+        if selected_student_id:
+            display_student_detail_view(selected_student_id)
+        else:
+            st.info("No students assigned to your class yet.")
     elif page == "Admin":
         display_admin_page()
 
@@ -397,30 +417,14 @@ def show_teacher_dashboard():
 # COMPONENT: CLASS PAGE (student-centric view)
 # =============================================================================
 def display_class_page():
-    """Display the Class page with compact student list and interactive navigation."""
-    st.header("My Class")
-    
+    """Display the Class page with compact student list."""
     # Get current teacher's students
     current_teacher_email = st.session_state.get('user_email')
     profiles = load_profiles()
     teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
     
-    print(f'DEBUG: Fetching students for email: {current_teacher_email}')
-    print(f'DEBUG: Available profiles: {list(profiles.keys())}')
-    matching_profiles = [sid for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email]
-    print(f'DEBUG: Matching profiles: {matching_profiles}')
-    print(f'DEBUG: Database returned {len(teacher_students)} students for user {current_teacher_email}')
-    
     if not teacher_students:
         st.info("No students assigned to your class yet.")
-        return
-    
-    # Check if a student is selected for detail view
-    selected_student_id = st.session_state.get('selected_student_id')
-    
-    if selected_student_id and st.session_state.get('show_student_detail'):
-        # Show student detail view
-        display_student_detail_view(selected_student_id)
         return
     
     # Display compact table of students
@@ -439,27 +443,16 @@ def display_class_page():
         # Resolve student name with proper fallback
         student_name = get_student_name(current_teacher_email, student_id)
         if not student_name:
-            # Use anonymized code if no real name exists
-            student_name = f"Student {student_id[-4:]}"  # Last 4 chars as code
+            student_name = f"Student {student_id[-4:]}"
         
-        # Create clean table layout with st.columns([2, 1])
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            # Make name clickable for detail view
-            if st.button(student_name, key=f"select_student_{student_id}", use_container_width=True):
-                st.session_state.selected_student_id = student_id
-                st.session_state.show_student_detail = True
-                st.rerun()
+            st.markdown(f"**{student_name}**")
         
         with col2:
-            # Display student's group
             group = student_info.get('target_group', 'g1')
-            st.markdown(f"**Group {group[-1]}**")  # Extract number from 'g1', 'g2', etc.
-    
-    # Check if we should show student detail view
-    if st.session_state.get('show_student_detail', False) and st.session_state.get('selected_student'):
-        display_student_detail_view(st.session_state.selected_student)
+            st.markdown(f"**Group {group[-1]}**")
 
 def display_student_detail_view(student_id):
     """Display simplified detail view for a selected student."""
@@ -474,15 +467,6 @@ def display_student_detail_view(student_id):
     current_teacher_email = st.session_state.get('user_email')
     student_name = get_student_name(current_teacher_email, student_id) or f"Student {student_id}"
     
-    # Update header to show selected student
-    st.header(f"Student Detail: {student_name}")
-    
-    # Back button to return to list
-    if st.button("← Back to Class", key="back_to_class"):
-        st.session_state.show_student_detail = False
-        st.session_state.selected_student_id = None
-        st.rerun()
-    
     # Display only specific word analysis data used for coaching
     st.subheader("Word Analysis Data")
     
@@ -491,12 +475,13 @@ def display_student_detail_view(student_id):
     mastered = student_info.get('mastered', '').split(',') if student_info.get('mastered') else []
     target_group = student_info.get('target_group', 'g1')
     
-    # Display current struggling words
+    # Display current struggling words in a 3-column grid
     if struggles:
         st.write("**Current Struggling Words:**")
-        for word in struggles:
-            if word.strip():
-                st.write(f"• {word.strip()}")
+        filtered_struggles = [w.strip() for w in struggles if w.strip()]
+        cols = st.columns(3)
+        for i, word in enumerate(filtered_struggles):
+            cols[i % 3].write(f"• {word}")
     
     # Display current mastered words
     if mastered:
@@ -1863,9 +1848,9 @@ def display_admin_page():
     st.markdown("---")
     
     # Test Templates Management
-    with st.expander(" Manage Test Templates", expanded=False):
-        st.subheader("Test Library")
-        st.caption("Create and manage diagnostic test templates.")
+    with st.expander(" Manage Assessment Templates", expanded=False):
+        st.subheader("Assessment Library")
+        st.caption("Create and manage diagnostic assessment templates.")
         
         from database_manager import get_all_test_templates, save_test_template, delete_test_template
         
