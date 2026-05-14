@@ -390,16 +390,25 @@ def show_teacher_dashboard():
     # Student selector in sidebar (shown when Student page is active)
     selected_student_id = None
     if page == "Student":
-        profiles = load_profiles()
-        teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
+        # 1. Fetch real students from the database
+        from database_manager import get_all_students_by_teacher
+        all_students = get_all_students_by_teacher(current_teacher_email)
         
         student_options = {}
-        for sid, data in sorted(teacher_students.items(), key=lambda x: get_student_name(current_teacher_email, x[0]) or x[0]):
-            name = get_student_name(current_teacher_email, sid) or f"Student {sid[-4:]}"
-            student_options[name] = sid
+        for s in all_students:
+            # We use 'name' and 'student_id' keys from the database results
+            student_options[s['name']] = s['student_id']
         
         if student_options:
-            selected_name = st.sidebar.selectbox("Select Student", options=list(student_options.keys()))
+            # Determine the starting index (so it stays on the student you clicked)
+            current_names = list(student_options.keys())
+            try:
+                # If we just clicked 'View Profile' in the class list, this finds them in the dropdown
+                start_index = current_names.index(get_student_name(current_teacher_email, selected_student_id))
+            except:
+                start_index = 0
+                
+            selected_name = st.sidebar.selectbox("Select Student", options=current_names, index=start_index)
             selected_student_id = student_options[selected_name]
     
     # Route to appropriate page function
@@ -417,42 +426,55 @@ def show_teacher_dashboard():
 # COMPONENT: CLASS PAGE (student-centric view)
 # =============================================================================
 def display_class_page():
-    """Display the Class page with compact student list."""
-    # Get current teacher's students
-    current_teacher_email = st.session_state.get('user_email')
-    profiles = load_profiles()
-    teacher_students = {sid: data for sid, data in profiles.items() if data.get('teacher_id') == current_teacher_email}
+    st.title("Class Overview")
     
-    if not teacher_students:
-        st.info("No students assigned to your class yet.")
-        return
+    # 1. Fetch Students from DB
+    from database_manager import get_all_students_by_teacher
+    # Note: Ensure this returns student_id, real_name, and suggested_next
+    students = get_all_students_by_teacher(st.session_state.user_email)
     
-    # Display compact table of students
-    st.subheader("Students")
-    
-    # Group records by student_id to deduplicate
-    unique_students = {}
-    for student_id, student_info in teacher_students.items():
-        if student_id not in unique_students:
-            unique_students[student_id] = student_info
-    
-    # Sort students by name for consistent display
-    sorted_students = sorted(unique_students.items(), key=lambda x: get_student_name(current_teacher_email, x[0]) or x[0])
-    
-    for student_id, student_info in sorted_students:
-        # Resolve student name with proper fallback
-        student_name = get_student_name(current_teacher_email, student_id)
-        if not student_name:
-            student_name = f"Student {student_id[-4:]}"
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.markdown(f"**{student_name}**")
-        
-        with col2:
-            group = student_info.get('target_group', 'g1')
-            st.markdown(f"**Group {group[-1]}**")
+    # 2. SHOW STUDENT LIST FIRST
+    if not students:
+        st.info("No students in your class yet. Use the form below to add one.")
+    else:
+        st.subheader("Your Students")
+        h1, h2, h3 = st.columns([3, 1, 2])
+        h1.caption("NAME")
+        h2.caption("GROUP")
+        h3.caption("ACTION")
+
+        for s in students:
+            # We use 'student_id' and 'name' to match your database_manager logic
+            sid = s.get('student_id')
+            sname = s.get('name')
+            sgroup = s.get('current_g_level', 'g1')
+            
+            col1, col2, col3 = st.columns([3, 1, 2])
+            col1.write(f"**{sname}**")
+            col2.write(f"Group {sgroup[-1] if sgroup else '1'}")
+            
+            # Use 'student_id' for the key to avoid the KeyError
+            if col3.button("View Profile", key=f"btn_{sid}"):
+                st.session_state.selected_student_id = sid
+                # This matches your sidebar navigation variable
+                st.session_state.page = "Student" 
+                st.rerun()
+
+    st.divider()
+
+    # 3. ADD STUDENT SECTION AT THE BOTTOM
+    with st.expander("➕ Add New Student"):
+        with st.form("add_new_student", clear_on_submit=True):
+            name = st.text_input("Full Name")
+            group = st.selectbox("Assign to Group", [1, 2])
+            if st.form_submit_button("Create Student Record"):
+                if name:
+                    from database_manager import add_student
+                    if add_student(st.session_state.user_email, name, f"g{group}"):
+                        st.success(f"Success! {name} added.")
+                        st.rerun()
+                else:
+                    st.error("Please enter a name.")
 
 def display_student_detail_view(student_id):
     """Display simplified detail view for a selected student."""
@@ -796,7 +818,18 @@ def display_assessment_form():
             options=["None / New Student"] + existing_names,
             index=default_index
         )
-        
+        # Inside your sidebar logic:
+        if page_selection == "Student":
+            from database_manager import get_all_students_by_teacher
+            students = get_all_students_by_teacher(st.session_state.user_email)
+            
+            if students:
+                student_names = {s['name']: s['id'] for s in students}
+                selected_name = st.sidebar.selectbox("Select Student", options=list(student_names.keys()))
+                st.session_state.selected_student_id = student_names[selected_name]
+            else:
+                st.sidebar.warning("Add a student in the Class page first.")
+
         # Initialize session state for new student
         if "pending_student_name" not in st.session_state:
             st.session_state.pending_student_name = ""

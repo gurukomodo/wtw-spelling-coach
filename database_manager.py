@@ -1701,3 +1701,41 @@ def save_ai_report(student_id, report_text):
         return False
     finally:
         conn.close()
+
+import uuid
+
+def add_student(teacher_id, real_name, target_group="g1"):
+    """
+    Manually adds a new student to the database.
+    Ensures they are linked to the correct teacher immediately.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        # 1. Create a unique ID to avoid the "STU_ghost" issue
+        student_id = f"student_{uuid.uuid4().hex[:8]}"
+        
+        # 2. Generate their privacy pseudonym (e.g., Student_07)
+        pseudonym = generate_pseudonym(teacher_id, student_id)
+        
+        # 3. Insert into student_identity
+        cursor.execute('''
+            INSERT INTO student_identity (teacher_id, student_id, real_name, pseudonym)
+            VALUES (?, ?, ?, ?)
+        ''', (teacher_id, student_id, real_name, pseudonym))
+        
+        # 4. Create an initial 'anchor' assessment so they show up in G-Level lists
+        # This sets their starting group (e.g., g1 or g2)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO assessments (student_id, teacher_id, test_date, created_at, suggested_next)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, target_group))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding student: {e}")
+        return False
+    finally:
+        conn.close()
