@@ -379,7 +379,14 @@ def show_teacher_dashboard():
         st.rerun()
     
     # Sidebar navigation using radio buttons
-    page = st.sidebar.radio("Navigation", ["Class", "Student", "Admin"])
+    # Read from session_state.page if set (e.g., from 'View Profile' button)
+    default_page_idx = 0
+    if st.session_state.get('page') == "Student":
+        default_page_idx = 1
+    elif st.session_state.get('page') == "Admin":
+        default_page_idx = 2
+    
+    page = st.sidebar.radio("Navigation", ["Class", "Student", "Admin"], index=default_page_idx)
     
     # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
@@ -402,14 +409,27 @@ def show_teacher_dashboard():
         if student_options:
             # Determine the starting index (so it stays on the student you clicked)
             current_names = list(student_options.keys())
-            try:
-                # If we just clicked 'View Profile' in the class list, this finds them in the dropdown
-                start_index = current_names.index(get_student_name(current_teacher_email, selected_student_id))
-            except:
-                start_index = 0
+            start_index = 0
+            
+            # Check if a student was selected from the Class page
+            if st.session_state.get('selected_student_id'):
+                try:
+                    # Get the name for the selected student ID
+                    selected_sid = st.session_state.get('selected_student_id')
+                    selected_name = get_student_name(current_teacher_email, selected_sid)
+                    if selected_name in current_names:
+                        start_index = current_names.index(selected_name)
+                except:
+                    start_index = 0
                 
             selected_name = st.sidebar.selectbox("Select Student", options=current_names, index=start_index)
             selected_student_id = student_options[selected_name]
+            
+            # Clear the selected_student_id from session state after using it
+            if 'selected_student_id' in st.session_state:
+                del st.session_state['selected_student_id']
+            if 'page' in st.session_state:
+                del st.session_state['page']
     
     # Route to appropriate page function
     if page == "Class":
@@ -478,24 +498,31 @@ def display_class_page():
 
 def display_student_detail_view(student_id):
     """Display simplified detail view for a selected student."""
-    profiles = load_profiles()
-    student_info = profiles.get(student_id, {})
-    
-    if not student_info:
-        st.error("Student not found")
-        return
-    
     # Get student name with proper fallback
     current_teacher_email = st.session_state.get('user_email')
     student_name = get_student_name(current_teacher_email, student_id) or f"Student {student_id}"
     
+    # Display student name as large header
+    st.title(student_name)
+    
+    # Fetch latest assessment data from database
+    from database_manager import get_student_history
+    history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
+    
+    # Get the most recent assessment for word analysis
+    struggles = []
+    mastered = []
+    target_group = 'g1'
+    
+    if history:
+        latest = history[-1]  # Most recent assessment
+        if latest.get('struggling_words'):
+            struggles = latest.get('struggling_words', '').split(',') if latest.get('struggling_words') else []
+        if latest.get('suggested_next'):
+            target_group = latest.get('suggested_next', 'g1')
+    
     # Display only specific word analysis data used for coaching
     st.subheader("Word Analysis Data")
-    
-    # Get current assessment data for this student
-    struggles = student_info.get('struggles', '').split(',') if student_info.get('struggles') else []
-    mastered = student_info.get('mastered', '').split(',') if student_info.get('mastered') else []
-    target_group = student_info.get('target_group', 'g1')
     
     # Display current struggling words in a 3-column grid
     if struggles:
@@ -528,22 +555,25 @@ def display_assessment_workflow(student_id, student_name):
     current_settings = get_teacher_settings(current_teacher_email)
     sheet_url = current_settings.get('google_sheet_url', '')
     
-    if sheet_url and not st.session_state.get('classroom_data'):
+    # Use student-specific key for classroom data
+    classroom_data_key = f'classroom_data_{student_id}'
+    
+    if sheet_url and not st.session_state.get(classroom_data_key):
         # Fetch classroom data for this student
         try:
             shadow_data = get_sheet_data(sheet_url, student_name, None)
             if isinstance(shadow_data, list):
-                st.session_state.classroom_data = shadow_data
+                st.session_state[classroom_data_key] = shadow_data
                 print(f"DEBUG: Fetched {len(shadow_data)} classroom data entries for {student_name}")
         except Exception as e:
             print(f"DEBUG: Failed to fetch classroom data: {e}")
     
-    # Display classroom data if available
-    if st.session_state.get('classroom_data'):
+    # Display classroom data if available for this student
+    if st.session_state.get(classroom_data_key):
         st.subheader("Classroom Data")
-        st.write(f"Found {len(st.session_state.classroom_data)} recent observations:")
+        st.write(f"Found {len(st.session_state[classroom_data_key])} recent observations:")
         
-        for entry in st.session_state.classroom_data[:5]:  # Show latest 5
+        for entry in st.session_state[classroom_data_key][:5]:  # Show latest 5
             st.write(f"• {entry.get('incorrect', '')} → {entry.get('intended', '')}")
     
     # Step 1: Photo Upload
