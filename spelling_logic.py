@@ -304,6 +304,37 @@ def run_scoring_crew(student_name, transcription_text):
     return crew.kickoff()
     return result
 '''
+def preprocess_crew_output(raw_data):
+    """
+    Pre-processes crew output to convert 'NA' strings to 0 before Pydantic validation.
+    This prevents validation errors when the AI returns 'NA' for unassessed groups.
+    """
+    if not isinstance(raw_data, dict):
+        return raw_data
+    
+    # List of group score fields that might contain 'NA'
+    group_fields = [
+        'g0_phonemic_awareness', 'g1_cvc_mapping', 'g2_digraphs',
+        'g3_silent_e', 'g4_vowel_teams', 'g5_r_controlled',
+        'g6_clusters', 'g7_multisyllabic', 'g8_reduction_morphology'
+    ]
+    
+    processed_data = raw_data.copy()
+    for field in group_fields:
+        if field in processed_data:
+            value = processed_data[field]
+            # Convert 'NA', 'na', 'N/A', or any string to 0
+            if isinstance(value, str) and value.upper() in ['NA', 'N/A', 'NOT ASSESSED', '']:
+                processed_data[field] = 0
+            elif isinstance(value, str):
+                # Try to convert numeric strings to int
+                try:
+                    processed_data[field] = int(float(value))
+                except (ValueError, TypeError):
+                    processed_data[field] = 0
+    
+    return processed_data
+
 def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow_data=None, analysis_complexity="Brief"):
     """
     Runs the AI scoring crew for a student's transcription.
@@ -371,7 +402,7 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
 
     CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
 
-SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student attempted any words from that group in their transcription. If NO words from a specific group were attempted, you MUST assign "NA" (Not Assessed) instead of a numerical score. Only assign percentage scores (0-100) for groups where the student actually attempted words.
+SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student attempted any words from that group in their transcription. If NO words from a specific group were attempted, you MUST assign 0 (zero) instead of a numerical score. Only assign percentage scores (0-100) for groups where the student actually attempted words. NEVER use "NA" or any non-numeric values.
 
     ANALYSIS COMPLEXITY: {analysis_complexity}
     - Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
@@ -382,15 +413,15 @@ SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student at
     Follow this exact structure:
     
     Score Variables:
-    score_0 = mastery percentage for g0 (0-100) OR "NA" if no g0 words attempted
-    score_1 = mastery percentage for g1 (0-100) OR "NA" if no g1 words attempted
-    score_2 = mastery percentage for g2 (0-100) OR "NA" if no g2 words attempted
-    score_3 = mastery percentage for g3 (0-100) OR "NA" if no g3 words attempted
-    score_4 = mastery percentage for g4 (0-100) OR "NA" if no g4 words attempted
-    score_5 = mastery percentage for g5 (0-100) OR "NA" if no g5 words attempted
-    score_6 = mastery percentage for g6 (0-100) OR "NA" if no g6 words attempted
-    score_7 = mastery percentage for g7 (0-100) OR "NA" if no g7 words attempted
-    score_8 = mastery percentage for g8 (0-100) OR "NA" if no g8 words attempted
+    score_0 = mastery percentage for g0 (0-100) OR 0 if no g0 words attempted
+    score_1 = mastery percentage for g1 (0-100) OR 0 if no g1 words attempted
+    score_2 = mastery percentage for g2 (0-100) OR 0 if no g2 words attempted
+    score_3 = mastery percentage for g3 (0-100) OR 0 if no g3 words attempted
+    score_4 = mastery percentage for g4 (0-100) OR 0 if no g4 words attempted
+    score_5 = mastery percentage for g5 (0-100) OR 0 if no g5 words attempted
+    score_6 = mastery percentage for g6 (0-100) OR 0 if no g6 words attempted
+    score_7 = mastery percentage for g7 (0-100) OR 0 if no g7 words attempted
+    score_8 = mastery percentage for g8 (0-100) OR 0 if no g8 words attempted
     {{
         "student_name": "The Student",
         "g0_phonemic_awareness": score_0,
@@ -433,8 +464,11 @@ SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student at
                 import json
                 raw_data = json.loads(crew_output.raw)
                 
-                # Create AssessmentSchema object from parsed data
-                result = AssessmentSchema(**raw_data)
+                # Pre-process to convert 'NA' strings to 0
+                processed_data = preprocess_crew_output(raw_data)
+                
+                # Create AssessmentSchema object from processed data
+                result = AssessmentSchema(**processed_data)
                 return result
                 
             except json.JSONDecodeError as e:

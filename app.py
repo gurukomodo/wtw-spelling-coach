@@ -196,7 +196,16 @@ def initialize_session_state():
 # MAIN ROUTER
 # =============================================================================
 def main():
+    # Router: Handle pending navigation before sidebar widget creation
+    if 'next_page' in st.session_state:
+        st.session_state.navigation_menu = st.session_state.next_page
+        del st.session_state.next_page
+    
     initialize_session_state()
+    
+    # Initialize navigation_menu only if it doesn't exist
+    if 'navigation_menu' not in st.session_state:
+        st.session_state.navigation_menu = 'Class'
     
     # 1. Catch the Interceptor (Login button click)
     if st.session_state.get('login_button'):
@@ -379,14 +388,10 @@ def show_teacher_dashboard():
         st.rerun()
     
     # Sidebar navigation using radio buttons
-    # Read from session_state.page if set (e.g., from 'View Profile' button)
-    default_page_idx = 0
-    if st.session_state.get('page') == "Student":
-        default_page_idx = 1
-    elif st.session_state.get('page') == "Admin":
-        default_page_idx = 2
+    page_options = ["Class", "Student", "Admin"]
+    default_page_idx = page_options.index(st.session_state.navigation_menu) if st.session_state.navigation_menu in page_options else 0
     
-    page = st.sidebar.radio("Navigation", ["Class", "Student", "Admin"], index=default_page_idx)
+    page = st.sidebar.radio("Navigation", page_options, index=default_page_idx, key="navigation_menu")
     
     # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
@@ -428,8 +433,7 @@ def show_teacher_dashboard():
             # Clear the selected_student_id from session state after using it
             if 'selected_student_id' in st.session_state:
                 del st.session_state['selected_student_id']
-            if 'page' in st.session_state:
-                del st.session_state['page']
+            # Keep page state for persistence across reruns
     
     # Route to appropriate page function
     if page == "Class":
@@ -476,8 +480,7 @@ def display_class_page():
             # Use 'student_id' for the key to avoid the KeyError
             if col3.button("View Profile", key=f"btn_{sid}"):
                 st.session_state.selected_student_id = sid
-                # This matches your sidebar navigation variable
-                st.session_state.page = "Student" 
+                st.session_state.next_page = "Student"
                 st.rerun()
 
     st.divider()
