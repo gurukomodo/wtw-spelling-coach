@@ -74,17 +74,20 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
             struggles = entry.get('struggling_words', "")
             notes = entry.get('teacher_refined_notes', "") or entry.get('teacher_notes', "")
             observations = entry.get('teacher_observations', "")
-            
+            raw_transcription = entry.get('raw_transcription', "")
+
             entry_str = f"--- {test_date[:10]} ---\nScores: {g_scores}\n"
+            if raw_transcription:
+                entry_str += f"Student's Writing: {raw_transcription}\n"
             if struggles:
                 entry_str += f"Struggles: {struggles}\n"
             if observations:
                 entry_str += f"Teacher Notes: {observations}\n"
             if notes:
                 entry_str += f"AI Analysis: {notes}\n"
-            
+
             history_entries.append(entry_str)
-        
+
         history_context = "\n\n".join(history_entries)
         
         # Recent context for priority weighting
@@ -93,8 +96,16 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
         for entry in recent:
             struggles = entry.get('struggling_words', "")
             observations = entry.get('teacher_observations', "")
-            if struggles or observations:
-                recent_entries.append(f"Recent: {struggles} | Notes: {observations}")
+            raw_transcription = entry.get('raw_transcription', "")
+            evidence_parts = []
+            if raw_transcription:
+                evidence_parts.append(f"Writing: {raw_transcription[:100]}...")
+            if struggles:
+                evidence_parts.append(f"Struggles: {struggles[:100]}...")
+            if observations:
+                evidence_parts.append(f"Notes: {observations[:100]}...")
+            if evidence_parts:
+                recent_entries.append("Recent: " + " | ".join(evidence_parts))
         recent_context = "\n".join(recent_entries) if recent_entries else ""
     
     prompt = f"""
@@ -116,9 +127,15 @@ Based on this holistic review:
 
 Provide a coaching report with:
 1. **Diagnostic Insight**: What phonetic patterns are they consistently missing?
-2. **Progress Analysis**: How has their trajectory changed over time?
-3. **Three Targeted Activities**: Specific practice for this week
-4. **Next Step Recommendation**: Clear direction for continued growth
+2. **Evidence Section (CRITICAL)**: For EACH G-Level you mention, you MUST provide specific evidence:
+   - List exact words from their assessment writing where they made errors (e.g., "wrote 'teem' instead of 'team'")
+   - If mentioning struggles from the Struggles field, quote the specific examples
+   - Format: "**Evidence for [G-Level Name]**: [specific word examples with their errors]"
+3. **Progress Analysis**: How has their trajectory changed over time?
+4. **Three Targeted Activities**: Specific practice for this week
+5. **Next Step Recommendation**: Clear direction for continued growth
+
+CRITICAL: You cannot claim a student struggles with a G-Level without providing specific word-level evidence from their assessment data or struggles field.
 
 Keep the tone professional, encouraging, and actionable.
 """
@@ -339,106 +356,197 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
     """
     Runs the AI scoring crew for a student's transcription.
     PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
-    
+
     Args:
         student_id: Internal student ID (never shown to AI)
-        transcription_text: The student's spelling attempts
+        transcription_text: The student's spelling attempts (empty for progress review mode)
         intended_words: Optional comma-separated list of target words (from test template)
         analysis_complexity: "Brief", "Standard", or "Detailed" analysis level
     """
     # Use provided words or fall back to global default
     target_words = intended_words if intended_words else CURRENT_TEST_WORDS
-    
+
     # PRIVACY: Always use 'The Student' alias in AI prompts
     student_alias = "The Student"
+
+    # Detect progress review mode (no new handwriting)
+    is_progress_review = not transcription_text or transcription_text.strip() == ""
     
     # 1. FETCH PREVIOUS FEEDBACK
     past_feedback = get_latest_teacher_notes(student_id)
     feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR {student_alias}: {past_feedback}" if past_feedback else ""
     
-    # 2. ADD SHADOW DATA CONTEXT
+    # 2. ADD SHADOW DATA CONTEXT (Contextual Evidence)
     shadow_context = ""
     if shadow_data:
         shadow_observations = []
         for entry in shadow_data:
             shadow_observations.append(f"Daily misspelling ({entry['timestamp']}): '{entry['incorrect']}' instead of '{entry['intended']}'")
-        
+
         if shadow_observations:
-            shadow_context = f"\n\nRECENT DAILY OBSERVATIONS:\n" + "\n".join(shadow_observations)
+            if is_progress_review:
+                shadow_context = f"\n\nCONTEXTUAL EVIDENCE (Primary Data Source for Progress Review):\n" + "\n".join(shadow_observations) + "\n\nCRITICAL: This is a PROGRESS REVIEW based on classroom observations. Analyze these daily mistakes to determine if the student's current G-Level placement remains appropriate or if adjustment is needed."
+            else:
+                shadow_context = f"\n\nCONTEXTUAL EVIDENCE (Recent Daily Work):\n" + "\n".join(shadow_observations) + "\n\nCRITICAL: Use this real-world classroom data to VERIFY if the patterns you identify in the current assessment are CONSISTENT with the student's daily spelling mistakes. If a pattern appears in the assessment but NOT in their daily work, note this discrepancy."
         else:
-            shadow_context = "\n\nNo recent daily observations available.\n"
+            shadow_context = "\n\nNo recent daily observations available for contextual verification.\n"
 
     # 2. DEFINE THE INSTRUCTIONS
-    task_description = f"""
-    {feedback_context}
-    {shadow_context}
-    
-    Analyze the following spelling attempts for {student_alias}:
-    {transcription_text}
-    
-    Compare them to: {target_words}
+    if is_progress_review:
+        # Progress Review Mode - Analyze Google Sheet data against current G-Level
+        task_description = f"""
+{feedback_context}
+{shadow_context}
+
+PROGRESS REVIEW MODE: No new handwriting sample provided.
+Your task is to analyze the student's RECENT CLASSROOM OBSERVATIONS (Google Sheet data) to evaluate their current G-Level placement.
+
+STUDENT: {student_alias}
+
+ANALYSIS FOCUS:
+1. Review the contextual evidence (daily misspellings) above
+2. Identify which linguistic groups (g0-g8) are represented in these errors
+3. Determine if the error patterns are consistent with their current G-Level
+4. Check for evidence of mastery or struggle in their current group
+5. Identify if they've developed new error patterns in higher groups (indicating readiness to advance)
+6. Identify if they're still struggling with patterns from lower groups (indicating need to step back)
+
+EVIDENCE REQUIREMENTS (CRITICAL):
+- For EACH G-Level you mention in your analysis, you MUST provide specific evidence from the Google Sheet data
+- Format: "**Evidence for [G-Level Name]**: [specific word examples with their errors]"
+- Example: "**Evidence for Vowel Teams (g4)**: Student wrote 'teem' instead of 'team', 'rain' instead of 'rein'"
+
+GROUP ALLOCATION RECOMMENDATION:
+Based SOLELY on the Google Sheet evidence, recommend whether to:
+- Keep current G-Level (if errors match current group patterns)
+- Advance to next G-Level (if showing mastery of current patterns and attempting higher-level words)
+- Step back to previous G-Level (if still struggling with lower-level patterns)
+
+STRICT RULES:
+- Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously
+  corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
+- Base ALL analysis on VISIBLE EVIDENCE in the Google Sheet data.
+- If no Google Sheet data is available, recommend keeping current placement and note insufficient data.
+
+FORMATTING RULES (CRITICAL):
+- When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
+- When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
+- Always provide at least TWO written examples from the data to prove an error pattern exists.
+
+SCORING FOR PROGRESS REVIEW:
+Since this is based on observational data rather than a controlled assessment, assign estimated scores (0-100%) based on the error frequency and complexity observed in the Google Sheet data.
+
+ANALYSIS COMPLEXITY: {analysis_complexity}
+- Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
+- Standard: Provide moderate detail with specific examples
+- Detailed: Provide deep phonological breakdown with extensive analysis
+
+CRITICAL: You MUST reply with a valid JSON object only.
+Follow this exact structure:
+
+Score Variables:
+score_0 = estimated mastery percentage for g0 based on observational data
+score_1 = estimated mastery percentage for g1 based on observational data
+score_2 = estimated mastery percentage for g2 based on observational data
+score_3 = estimated mastery percentage for g3 based on observational data
+score_4 = estimated mastery percentage for g4 based on observational data
+score_5 = estimated mastery percentage for g5 based on observational data
+score_6 = estimated mastery percentage for g6 based on observational data
+score_7 = estimated mastery percentage for g7 based on observational data
+score_8 = estimated mastery percentage for g8 based on observational data
+{{
+    "student_name": "The Student",
+    "g0_phonemic_awareness": score_0,
+    "g1_cvc_mapping": score_1,
+    "g2_digraphs": score_2,
+    "g3_silent_e": score_3,
+    "g4_vowel_teams": score_4,
+    "g5_r_controlled": score_5,
+    "g6_clusters": score_6,
+    "g7_multisyllabic": score_7,
+    "g8_reduction_morphology": score_8,
+    "suggested_next_groups": ["g1", "g2"],
+    "teacher_notes": "Your progress review analysis with specific evidence from Google Sheet data."
+}}
+
+Replace score_N with estimated percentage values (0-100) based on observational evidence.
+"""
+    else:
+        # Standard Assessment Mode
+        task_description = f"""
+{feedback_context}
+{shadow_context}
+
+Analyze the following spelling attempts for {student_alias}:
+{transcription_text}
+
+Compare them to: {target_words}
 
     STRICT RULES:
-    - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously 
-      corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
-    - Base all notes on VISIBLE EVIDENCE in the current transcription.
-    
-    FORMATTING RULES (CRITICAL):
-    - When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
-    - When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
-    - Always provide at least TWO written examples from the student's attempts to prove an error pattern exists.
+- Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously
+  corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
+- Base all notes on VISIBLE EVIDENCE in the current transcription.
+- CRITICAL: Use 'CONTEXTUAL EVIDENCE' (daily classroom observations) to VERIFY your diagnostic patterns.
+  If you identify an error pattern in the assessment, check if it appears in their daily work.
+  If a pattern appears in the assessment but NOT in daily work, note this discrepancy.
+  If a pattern appears consistently in both, this strengthens your diagnostic confidence.
 
-    INSTRUCTIONS:
-    Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
-    - Distinguish phonological errors (sound perception/production) from orthographic errors (spelling pattern mistakes)
-    - Pay CLOSE attention to Group 6 (Clusters/Blends). For Mandarin L1 speakers, look for:
-        * Omitted letters in consonant blends (e.g., writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
-        * Extra vowels inserted in blends (e.g., 'seled' for 'sled').
-    - Consider other ESL-specific issues (Mandarin L1 transfer):
-        * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
-        * Final consonant omission
-        * Vowel reduction absence
-    - A student may be strong in some higher groups while weak in earlier ones
+FORMATTING RULES (CRITICAL):
+- When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
+- When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
+- Always provide at least TWO written examples from the student's attempts to prove an error pattern exists.
 
-    CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
+INSTRUCTIONS:
+Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
+- Distinguish phonological errors (sound perception/production) from orthographic errors (spelling pattern mistakes)
+- Pay CLOSE attention to Group 6 (Clusters/Blends). For Mandarin L1 speakers, look for:
+    * Omitted letters in consonant blends (e.g., writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
+    * Extra vowels inserted in blends (e.g., 'seled' for 'sled').
+- Consider other ESL-specific issues (Mandarin L1 transfer):
+    * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
+    * Final consonant omission
+    * Vowel reduction absence
+- A student may be strong in some higher groups while weak in earlier ones
+
+CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
 
 SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student attempted any words from that group in their transcription. If NO words from a specific group were attempted, you MUST assign 0 (zero) instead of a numerical score. Only assign percentage scores (0-100) for groups where the student actually attempted words. NEVER use "NA" or any non-numeric values.
 
-    ANALYSIS COMPLEXITY: {analysis_complexity}
-    - Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
-    - Standard: Provide moderate detail with specific examples
-    - Detailed: Provide deep phonological breakdown with extensive analysis
-    
-    CRITICAL: You MUST reply with a valid JSON object only.
-    Follow this exact structure:
-    
-    Score Variables:
-    score_0 = mastery percentage for g0 (0-100) OR 0 if no g0 words attempted
-    score_1 = mastery percentage for g1 (0-100) OR 0 if no g1 words attempted
-    score_2 = mastery percentage for g2 (0-100) OR 0 if no g2 words attempted
-    score_3 = mastery percentage for g3 (0-100) OR 0 if no g3 words attempted
-    score_4 = mastery percentage for g4 (0-100) OR 0 if no g4 words attempted
-    score_5 = mastery percentage for g5 (0-100) OR 0 if no g5 words attempted
-    score_6 = mastery percentage for g6 (0-100) OR 0 if no g6 words attempted
-    score_7 = mastery percentage for g7 (0-100) OR 0 if no g7 words attempted
-    score_8 = mastery percentage for g8 (0-100) OR 0 if no g8 words attempted
-    {{
-        "student_name": "The Student",
-        "g0_phonemic_awareness": score_0,
-        "g1_cvc_mapping": score_1,
-        "g2_digraphs": score_2,
-        "g3_silent_e": score_3,
-        "g4_vowel_teams": score_4,
-        "g5_r_controlled": score_5,
-        "g6_clusters": score_6,
-        "g7_multisyllabic": score_7,
-        "g8_reduction_morphology": score_8,
-        "suggested_next_groups": ["g1", "g2"],
-        "teacher_notes": "Your analysis text goes here."
-    }}
-    
-    Replace score_N with actual percentage values (0-100).
-    """
+ANALYSIS COMPLEXITY: {analysis_complexity}
+- Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
+- Standard: Provide moderate detail with specific examples
+- Detailed: Provide deep phonological breakdown with extensive analysis
+
+CRITICAL: You MUST reply with a valid JSON object only.
+Follow this exact structure:
+
+Score Variables:
+score_0 = mastery percentage for g0 (0-100) OR 0 if no g0 words attempted
+score_1 = mastery percentage for g1 (0-100) OR 0 if no g1 words attempted
+score_2 = mastery percentage for g2 (0-100) OR 0 if no g2 words attempted
+score_3 = mastery percentage for g3 (0-100) OR 0 if no g3 words attempted
+score_4 = mastery percentage for g4 (0-100) OR 0 if no g4 words attempted
+score_5 = mastery percentage for g5 (0-100) OR 0 if no g5 words attempted
+score_6 = mastery percentage for g6 (0-100) OR 0 if no g6 words attempted
+score_7 = mastery percentage for g7 (0-100) OR 0 if no g7 words attempted
+score_8 = mastery percentage for g8 (0-100) OR 0 if no g8 words attempted
+{{
+    "student_name": "The Student",
+    "g0_phonemic_awareness": score_0,
+    "g1_cvc_mapping": score_1,
+    "g2_digraphs": score_2,
+    "g3_silent_e": score_3,
+    "g4_vowel_teams": score_4,
+    "g5_r_controlled": score_5,
+    "g6_clusters": score_6,
+    "g7_multisyllabic": score_7,
+    "g8_reduction_morphology": score_8,
+    "suggested_next_groups": ["g1", "g2"],
+    "teacher_notes": "Your analysis text goes here."
+}}
+
+Replace score_N with actual percentage values (0-100).
+"""
 
     task = Task(
         description=task_description,

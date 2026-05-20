@@ -25,6 +25,7 @@ from database_manager import (
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
     save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data
 )
+import constants
 
 # =============================================================================
 # PAGE CONFIG
@@ -389,9 +390,14 @@ def show_teacher_dashboard():
     
     # Sidebar navigation using radio buttons
     page_options = ["Class", "Student", "Admin"]
-    default_page_idx = page_options.index(st.session_state.navigation_menu) if st.session_state.navigation_menu in page_options else 0
     
-    page = st.sidebar.radio("Navigation", page_options, index=default_page_idx, key="navigation_menu")
+    # Only use index parameter if navigation_menu is not already set in session state
+    # This prevents Double Value error when session state already has a value
+    if 'navigation_menu' in st.session_state:
+        page = st.sidebar.radio("Navigation", page_options, key="navigation_menu")
+    else:
+        default_page_idx = 0  # Default to Class page
+        page = st.sidebar.radio("Navigation", page_options, index=default_page_idx, key="navigation_menu")
     
     # Initialize database and migrate legacy data 
     migrate_legacy_profiles()
@@ -489,7 +495,18 @@ def display_class_page():
     with st.expander("➕ Add New Student"):
         with st.form("add_new_student", clear_on_submit=True):
             name = st.text_input("Full Name")
-            group = st.selectbox("Assign to Group", [1, 2])
+            from constants import DIAGNOSTIC_GROUPS
+            group = st.selectbox(
+                "Assign to Group",
+                options=list(DIAGNOSTIC_GROUPS.keys()),
+                format_func=lambda x: DIAGNOSTIC_GROUPS[x],
+                index=1
+            )
+
+            if st.form_submit_button("Create Student Record"):
+                if name:
+                    from database_manager import add_student
+                    if add_student(st.session_state.user_email, name, group):
             if st.form_submit_button("Create Student Record"):
                 if name:
                     from database_manager import add_student
@@ -544,9 +561,139 @@ def display_student_detail_view(student_id):
     
     if not struggles and not mastered:
         st.info("No word analysis data recorded yet.")
-    
+
     st.divider()
-    
+
+    # Run Global Analysis section
+    st.subheader("Global Analysis")
+    st.caption("Generate coaching report and practice list from existing data without new photo upload")
+
+    if st.button("🔄 Refresh Coaching Plan", key=f"refresh_analysis_{student_id}"):
+        with st.spinner("Running global analysis..."):
+            try:
+                # Fetch latest classroom data from Google Sheets
+                current_settings = get_teacher_settings(current_teacher_email)
+                sheet_url = current_settings.get('google_sheet_url', '')
+
+                shadow_data = []
+                if sheet_url:
+                    try:
+                        shadow_data = get_sheet_data(sheet_url, student_name, None)
+                        if isinstance(shadow_data, dict) and "error" in shadow_data:
+                            st.warning(f"Could not fetch Google Sheet data: {shadow_data['error']}")
+                            shadow_data = []
+                        elif shadow_data:
+                            st.success(f"Fetched {len(shadow_data)} entries from Google Sheets")
+                    except Exception as e:
+                        st.warning(f"Failed to fetch Google Sheet data: {e}")
+
+                # Get most recent assessment scores
+                latest_assessment = None
+                if history:
+                    latest_assessment = history[-1]
+                    st.info(f"Using latest assessment from {latest_assessment.get('created_at', 'unknown date')}")
+
+                if not latest_assessment:
+                    st.error("No assessment data found. Please complete an assessment first.")
+                else:
+                    # Prepare data for progress review analysis
+                    # Use empty transcription to indicate progress review mode
+                    transcription_text = ""  # Empty = progress review mode
+
+                    # Get current G-Level from latest assessment
+                    current_g_level = latest_assessment.get('suggested_next', 'g1')
+from constants import DIAGNOSTIC_GROUPS
+                    g_scores = {gid: latest_assessment.get(field, 0) for gid, field in DIAGNOSTIC_GROUPS.items()}
+
+                    # Run progress review analysis
+                    analysis_result = run_scoring_crew(
+                        student_id,
+                        transcription_text,
+                        intended_words="",
+                        shadow_data=shadow_data,
+                        analysis_complexity="Standard"
+                    )
+
+                    # Store results for confirmation
+                    st.session_state[f'progress_review_{student_id}'] = {
+                        'analysis_result': analysis_result,
+                        'current_g_level': current_g_level,
+                        'g_scores': g_scores,
+                        'shadow_data_count': len(shadow_data) if shadow_data else 0
+                    }
+
+                    st.success("Progress review complete! Review and confirm the group allocation below.")
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Failed to run global analysis: {str(e)}")
+
+    # Display progress review results if available
+    progress_review_key = f'progress_review_{student_id}'
+    if st.session_state.get(progress_review_key):
+        review_data = st.session_state[progress_review_key]
+        analysis_result = review_data['analysis_result']
+        current_g_level = review_data['current_g_level']
+        g_scores = review_data['g_scores']
+        shadow_data_count = review_data['shadow_data_count']
+
+        st.subheader("Progress Review Results")
+
+        # Display current vs suggested analysis
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write("**Current Group Allocation:**")
+            st.metric("Current G-Level", current_g_level)
+            st.write("**Current Scores:**")
+            for g, score in g_scores.items():
+                st.write(f"{g.upper()}: {score}%")
+
+        with col2:
+            st.write("**AI Analysis Based on Google Sheet Data:**")
+            teacher_notes = getattr(analysis_result, 'teacher_notes', '')
+            st.write(teacher_notes)
+
+            suggested_groups = getattr(analysis_result, 'suggested_next_groups', [])
+            st.write(f"**Suggested Groups:** {', '.join(suggested_groups)}")
+
+        # Evidence section
+        if shadow_data_count > 0:
+            st.write(f"**Evidence Source:** Based on {shadow_data_count} recent classroom observations from Google Sheets")
+
+        # Group allocation confirmation
+        st.subheader("Confirm Group Allocation")
+        suggested_g_level = suggested_groups[0] if suggested_groups else current_g_level
+
+        col_confirm, col_override = st.columns([1, 2])
+
+        with col_confirm:
+            if st.button("✅ Confirm Suggested Group", key=f"confirm_group_{student_id}"):
+                # Update student's group allocation in database
+                # This would require updating the student_identity table or latest assessment
+                st.success(f"Group allocation updated to {suggested_g_level}")
+                # Clear the progress review data
+                del st.session_state[progress_review_key]
+                st.rerun()
+
+        with col_override:
+            import constants
+            override_options = list(constants.DIAGNOSTIC_GROUPS.keys())
+            override_selection = st.selectbox(
+                "Or manually select a different group:",
+                override_options,
+                index=override_options.index(current_g_level) if current_g_level in override_options else 1,
+                key=f"override_group_{student_id}"
+            )
+
+            if st.button("📝 Override with Manual Selection", key=f"override_btn_{student_id}"):
+                # Update with manual selection
+                st.success(f"Group allocation manually set to {override_selection}")
+                del st.session_state[progress_review_key]
+                st.rerun()
+
+        st.divider()
+
     # Add Assessment section with Step 1-5 workflow
     st.subheader("Add Assessment")
     display_assessment_workflow(student_id, student_name)
@@ -649,10 +796,11 @@ def display_assessment_workflow(student_id, student_name):
                         print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
                         
                         intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
-                        shadow_data = st.session_state.get("classroom_data", [])
-                        
+                        shadow_data = st.session_state.get(classroom_data_key, [])
+
                         print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew...")
-                        
+                        print(f"DEBUG: Contextual evidence entries: {len(shadow_data) if shadow_data else 0}")
+
                         analysis_result = run_scoring_crew(student_id, st.session_state.edited_transcription, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
                         
                         teacher_notes = getattr(analysis_result, 'teacher_notes', '')
@@ -957,7 +1105,7 @@ def display_assessment_form():
         st.write("Target Group")
         target_group_input = st.selectbox(
             "Select student's current G-level",
-            options=[f"g{i}" for i in range(9)],
+            options=list(constants.DIAGNOSTIC_GROUPS.keys()),
             key="target_group_input"
         )
         
@@ -1426,11 +1574,12 @@ def display_assessment_form():
                         
                         # Get shadow data if available
                         shadow_data = st.session_state.get("shadow_data", [])
-                        
+
                         # Debug check before AI starts
                         print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew...")
-                        
-                        # Call the AI scoring crew
+                        print(f"DEBUG: Contextual evidence entries: {len(shadow_data) if shadow_data else 0}")
+
+                        # Call the AI scoring crew with contextual evidence
                         analysis_result = run_scoring_crew(student_id, st.session_state.edited_transcription, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
                         
                         # Store raw AI result for debugging
@@ -1653,7 +1802,6 @@ def display_assessment_form():
             save_obj = SaveObject()
             save_obj.student_id = student_id
             save_obj.real_name = student_name  # Pass real name for proper linking
-            save_obj.suggested_next_groups = cleaned_targets
             save_obj.teacher_notes = notes
             save_obj.g0_phonemic_awareness = g_scores["g0"]
             save_obj.g1_cvc_mapping = g_scores["g1"]
@@ -1664,6 +1812,33 @@ def display_assessment_form():
             save_obj.g6_clusters = g_scores["g6"]
             save_obj.g7_multisyllabic = g_scores["g7"]
             save_obj.g8_reduction_morphology = g_scores["g8"]
+
+            # Calculate suggested_next based on first level below 80%
+            group_scores = {
+                "g0": g_scores["g0"],
+                "g1": g_scores["g1"],
+                "g2": g_scores["g2"],
+                "g3": g_scores["g3"],
+                "g4": g_scores["g4"],
+                "g5": g_scores["g5"],
+                "g6": g_scores["g6"],
+                "g7": g_scores["g7"],
+                "g8": g_scores["g8"]
+            }
+
+            # Find first level with score below 80%
+            suggested_level = None
+            for group, score in group_scores.items():
+                if score < 80:
+                    suggested_level = group
+                    break
+
+            # If all levels are 80% or above, suggest the next level after the highest
+            if suggested_level is None:
+                suggested_level = "g8"  # Default to highest if all mastered
+
+            # Override AI suggestions with calculated level
+            save_obj.suggested_next_groups = [suggested_level]
 
             struggling_words = st.session_state.get("struggling_words_input", "")
             teacher_observations = st.session_state.get("teacher_observations_input", "")

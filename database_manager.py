@@ -734,7 +734,7 @@ def get_student_history(student_id, teacher_id=None, admin=False):
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
             teacher_notes, teacher_refined_notes, struggling_words, teacher_observations,
-            coaching_report, test_template
+            coaching_report, test_template, raw_transcription
         FROM assessments
         WHERE student_id = ?
         ORDER BY created_at ASC
@@ -749,7 +749,7 @@ def get_student_history(student_id, teacher_id=None, admin=False):
         'g4_vowel_teams', 'g5_r_controlled', 'g6_clusters',
         'g7_multisyllabic', 'g8_reduction', 'suggested_next',
         'teacher_notes', 'teacher_refined_notes', 'struggling_words', 'teacher_observations',
-        'coaching_report', 'test_template'
+        'coaching_report', 'test_template', 'raw_transcription'
     ]
     return [dict(zip(column_names, row)) for row in results]
 
@@ -784,7 +784,7 @@ def get_anonymized_history(student_name):
             g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words
+            teacher_notes, teacher_refined_notes, struggling_words, raw_transcription
         FROM assessments
         WHERE student_id = ?
         ORDER BY created_at DESC
@@ -813,7 +813,8 @@ def get_anonymized_history(student_name):
             "suggested_next": row[11],
             "teacher_notes": row[12],
             "teacher_refined_notes": row[13],
-            "struggling_words": row[14]
+            "struggling_words": row[14],
+            "raw_transcription": row[15]
         }
         anonymized.append(anon_record)
 

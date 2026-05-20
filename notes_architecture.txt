@@ -1,0 +1,34 @@
+The WTW Spelling Coach is a Streamlit-based application designed for teachers to assess and track the spelling progress of Mandarin L1 (ESL) students. Below is an architectural overview of the project.
+
+### 1. Overall Architecture
+The project follows a **Layered Architecture** with a clear separation between the UI (Streamlit), Business Logic (CrewAI/Gemini), and Persistence (SQLite/CSV).
+
+- **Frontend/UI Layer (`app.py`):** Handles all user interactions, routing, and state management using Streamlit's session state.
+- **Service/Logic Layer (`spelling_logic.py`):** Orchestrates AI agents via CrewAI and direct LLM calls to Google Gemini for image transcription, assessment scoring, and coaching report generation.
+- **Data Persistence Layer (`database_manager.py`):** Manages all CRUD operations for students, teachers, assessments, and settings using a local SQLite database (`data/spelling_coach.db`).
+- **Integration Layer:** Connects to external services like Google Sheets (via `get_sheet_data` in `database_manager.py`) and handles image preprocessing (`utils.py`).
+
+### 2. Main Entry Points
+- **`app.py`**: The primary entry point for the Streamlit application. It contains the `main()` router which directs users through:
+    - **Registration/Login**: Handling teacher authentication and profile selection.
+    - **Teacher Dashboard**: The central hub with a sidebar for navigation between "Class", "Student", and "Admin" views.
+- **`database_manager.py`**: While not an entry point for users, its `init_db()` function is the critical first step for the application's lifecycle, ensuring the schema is ready.
+
+### 3. Component Interaction
+1.  **Teacher Inputs**: A teacher uploads a photo of student handwriting or enters data manually in `app.py`.
+2.  **Transcription/Analysis Request**: `app.py` calls functions in `spelling_logic.py` (e.g., `transcribe_handwriting`, `run_scoring_crew`).
+3.  **AI Orchestration**: `spelling_logic.py` uses **CrewAI Agents** (like the "ESL Spelling and Phonology Assessor") to process the input against predefined rubrics (the 9 diagnostic groups g0–g8).
+4.  **Data Persistence**: Once analyzed and refined by the teacher, `app.py` calls `save_assessment()` in `database_manager.py` to store the results.
+5.  **External Context**: The application can fetch "Shadow Data" (classroom observations) from Google Sheets to provide the AI with more context for a holistic assessment.
+
+### 4. State and Data Handling
+- **Volatile State (`st.session_state`)**: Primarily handled in `app.py`. It stores the current logged-in teacher, the selected student, raw/edited transcriptions, and temporary AI analysis results.
+- **Persistent Data (SQLite)**: Handled in `database_manager.py`. The `spelling_coach.db` file contains:
+    - `assessments`: Historical records of every spelling test.
+    - `student_identity`: Maps internal IDs to real names and privacy-safe pseudonyms.
+    - `teacher_settings`: Stores teacher names, unit descriptions, and Google Sheet URLs.
+    - `test_templates` & `draft_assessments`: Manages reusable test content and unfinished work.
+- **Legacy/Backup Data**: The system still interacts with `students.csv` for legacy support, migrating data into the SQLite database when encountered.
+
+### 5. Privacy Design
+A key architectural feature is the **Anonymization Layer**. When data is sent to AI agents (via `spelling_logic.py`), the `database_manager.py`'s `get_anonymized_history` function ensures that real student names are replaced with "The Student" or pseudonyms, protecting student PII (Personally Identifiable Information).
