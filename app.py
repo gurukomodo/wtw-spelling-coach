@@ -853,7 +853,7 @@ def display_assessment_workflow(student_id, student_name):
         selected_list_name_display = None # To display selected list name
 
         if st.session_state.current_word_list_mode == "Select Existing List":
-            named_lists = database_manager.get_named_lists(current_teacher_email)
+            named_lists = get_named_lists(current_teacher_email)
             
             list_options = {"Select a saved list...": None}
             for lst in named_lists:
@@ -862,7 +862,7 @@ def display_assessment_workflow(student_id, student_name):
             # Smart memory: default to last used list if available and in options
             default_index = 0
             if st.session_state.get("last_used_assessment_list_id"):
-                last_used_list = database_manager.get_named_list_by_id(st.session_state.last_used_assessment_list_id)
+                last_used_list = get_named_list_by_id(st.session_state.last_used_assessment_list_id)
                 if last_used_list and last_used_list['list_name'] in list_options:
                     default_index = list(list_options.keys()).index(last_used_list['list_name'])
             
@@ -875,7 +875,7 @@ def display_assessment_workflow(student_id, student_name):
             )
             
             if selected_list_id and list_options[selected_list_id] is not None:
-                list_data = database_manager.get_named_list_by_id(list_options[selected_list_id])
+                list_data = get_named_list_by_id(list_options[selected_list_id])
                 if list_data:
                     st.session_state.intended_words_input = list_data['target_words']
                     st.session_state.current_list_id = list_data['id'] # Store ID for smart memory
@@ -907,7 +907,7 @@ def display_assessment_workflow(student_id, student_name):
             )
             if st.button("Save New List", key=f"save_new_list_btn_{student_id}"):
                 if new_list_name and st.session_state.intended_words_input:
-                    success = database_manager.save_named_list(
+                    success = save_named_list(
                         current_teacher_email,
                         new_list_name.strip(),
                         st.session_state.intended_words_input.strip()
@@ -916,7 +916,7 @@ def display_assessment_workflow(student_id, student_name):
                         st.success(f"Word list '{new_list_name}' saved!")
                         st.session_state.current_word_list_mode = "Select Existing List" # Switch to select after saving
                         # Automatically select the newly saved list
-                        named_lists_after_save = database_manager.get_named_lists(current_teacher_email)
+                        named_lists_after_save = get_named_lists(current_teacher_email)
                         for lst in named_lists_after_save:
                             if lst['list_name'] == new_list_name.strip():
                                 st.session_state.last_used_assessment_list_id = lst['id']
