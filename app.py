@@ -1017,7 +1017,6 @@ def display_assessment_workflow(student_id, student_name):
                 height=200,
                 key=f"edited_transcription_{student_id}" # Use student_id in key for uniqueness
             )
-            st.session_state.edited_transcription = edited_text # Keep session state updated
 
             # Analysis Complexity Control
             st.subheader("Step 5: Analysis Settings")
