@@ -185,7 +185,7 @@ def initialize_session_state():
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
         ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False), ("logged_in", False), ("user_email", None),
-        ("authenticated", False), ("role", None),
+        ("authenticated", False), ("role", None), ("intended_words_input", ""), ("processed_intended_words", ""),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -832,6 +832,29 @@ def display_assessment_workflow(student_id, student_name):
     
     # Use student-specific key for classroom data
     classroom_data_key = f'classroom_data_{student_id}'
+
+    # Step 1: Define Assessment Target Words
+    with st.expander("1. Define Assessment Target Words", expanded=True):
+        st.session_state.intended_words_input = st.text_area(
+            "Enter the intended words for this assessment (comma-separated or one per line):",
+            value=st.session_state.get("intended_words_input", ""),
+            height=150,
+            key=f"intended_words_input_{student_id}",
+            placeholder="e.g., cat, dog, run, jump\nor\ncat\ndog\nrun\njump"
+        )
+        st.info("💡 Future Feature: Select from App-Generated Diagnostic Lists")
+
+    # Normalize target words for consistent passing
+    if st.session_state.intended_words_input:
+        processed_intended_words = [
+            word.strip()
+            for part in st.session_state.intended_words_input.split(',')
+            for word in part.split('\n')
+            if word.strip()
+        ]
+        st.session_state.processed_intended_words = ", ".join(processed_intended_words)
+    else:
+        st.session_state.processed_intended_words = "" # Ensure it's empty if no input
     
     if sheet_url and not st.session_state.get(classroom_data_key):
         # Fetch classroom data for this student
@@ -858,8 +881,8 @@ def display_assessment_workflow(student_id, student_name):
         for entry in st.session_state[classroom_data_key][:5]:  # Show latest 5
             st.write(f"• {entry.get('incorrect', '')} → {entry.get('intended', '')}")
     
-    # Step 1: Photo Upload
-    st.subheader("Step 1: Upload Photo")
+    # Step 2: Photo Upload
+    st.subheader("Step 2: Upload Photo")
     uploaded_file = st.file_uploader("Upload student's handwriting photo", type=['png', 'jpg', 'jpeg'], key=f"upload_photo_{student_id}")
     
     if uploaded_file:
@@ -872,20 +895,20 @@ def display_assessment_workflow(student_id, student_name):
             st.subheader("AI's View (Cleaned)")
             st.image(clean_img, width="stretch")
             
-            if st.button("Step 2: Read Handwriting", key=f"read_handwriting_{student_id}") and not st.session_state.get('processing', False):
+            if st.button("Step 3: Read Handwriting", key=f"read_handwriting_{student_id}") and not st.session_state.get('processing', False):
                 st.session_state['processing'] = True
                 print('DEBUG: Handwriting Analysis Started...')
                 with st.spinner('AI is reading handwriting...'):
                     try:
-                        result_text = transcribe_handwriting(clean_base64)
+                        # Pass intended words to transcription
+                        result_text = transcribe_handwriting(clean_base64, intended_words=st.session_state.processed_intended_words)
                         
                         if result_text:
                             st.success("Data received from AI")
                             
-                            if "fan:" in result_text:
-                                cleaned_text = result_text[result_text.find("fan:"):]
-                            else:
-                                cleaned_text = result_text
+                            # The AI's transcription format might be "intended:attempt", so we don't hardcode "fan:"
+                            # We keep the raw result to allow the analysis crew to process it as is.
+                            cleaned_text = result_text # Use raw result directly
                             
                             st.session_state['edited_transcription'] = cleaned_text
                             st.session_state['raw_transcription'] = cleaned_text
@@ -899,7 +922,7 @@ def display_assessment_workflow(student_id, student_name):
                         st.session_state['processing'] = False
         
         with col_text:
-            st.subheader("Step 3: Verify & Edit")
+            st.subheader("Step 4: Verify & Edit Transcription")
             
             if not st.session_state.get("edited_transcription"):
                 st.info("Waiting for handwriting analysis...")
@@ -913,7 +936,7 @@ def display_assessment_workflow(student_id, student_name):
             st.session_state.edited_transcription = edited_text # Keep session state updated
 
             # Analysis Complexity Control
-            st.subheader("Analysis Settings")
+            st.subheader("Step 5: Analysis Settings")
             analysis_complexity = st.select_slider(
                 "Analysis Complexity",
                 options=["Brief", "Standard", "Detailed"],
@@ -922,12 +945,12 @@ def display_assessment_workflow(student_id, student_name):
                 help="Brief: 2-3 sentence summary | Standard: Moderate detail | Detailed: Deep phonological breakdown"
             )
             
-            # Step 4: Run Analysis
-            if st.button("Step 4: Run Analysis", key=f"run_analysis_{student_id}"):
+            # Step 6: Run Analysis
+            if st.button("Step 6: Run Analysis", key=f"run_analysis_{student_id}"):
                 if not student_name:
                     st.warning("Please select a student!")
                 elif not edited_text:
-                    st.warning("Please upload and transcribe a photo first!")
+                    st.warning("Please complete the transcription first!")
                 else:
                     with st.spinner("Running AI analysis..."):
                         try:
@@ -935,13 +958,24 @@ def display_assessment_workflow(student_id, student_name):
                             st.session_state['student_attempts_for_report'] = st.session_state.edited_transcription
                             print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
                             
-                            intended_words = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine" # Default, should be from template
+                            # Use intended words from session state, or fall back to default if not provided
+                            intended_words_for_analysis = st.session_state.get("processed_intended_words")
+                            if not intended_words_for_analysis:
+                                # Fallback if target words were not provided in step 1
+                                intended_words_for_analysis = "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine" 
+                            
                             shadow_data = st.session_state.get(classroom_data_key, [])
 
-                            print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew...")
+                            print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew with intended words: {intended_words_for_analysis[:50]}...")
                             print(f"DEBUG: Contextual evidence entries: {len(shadow_data) if shadow_data else 0}")
 
-                            analysis_result = run_scoring_crew(student_id, st.session_state.edited_transcription, intended_words=intended_words, shadow_data=shadow_data, analysis_complexity=analysis_complexity)
+                            analysis_result = run_scoring_crew(
+                                student_id,
+                                st.session_state.edited_transcription,
+                                intended_words=intended_words_for_analysis, # Pass the collected intended words
+                                shadow_data=shadow_data,
+                                analysis_complexity=analysis_complexity
+                            )
                             
                             teacher_notes = getattr(analysis_result, 'teacher_notes', 'No analysis available yet.')
                             st.session_state.final_diagnostic_notes = teacher_notes
@@ -971,8 +1005,8 @@ def display_assessment_workflow(student_id, student_name):
                             st.error(f"Failed to run AI analysis: {e}. Please check your input and try again.")
                             st.session_state.final_diagnostic_notes = "AI analysis failed."
             
-            # Step 5: Teacher Refinement
-            st.subheader("Step 5: Teacher Refinement")
+            # Step 7: Teacher Refinement
+            st.subheader("Step 7: Teacher Refinement")
             st.caption("Review the AI's notes above. Verify and record your final diagnostic decision.")
             
             col1, col2 = st.columns(2)
@@ -1013,8 +1047,18 @@ def display_assessment_workflow(student_id, student_name):
                         save_obj = SaveObject()
                         save_obj.student_id = student_id
                         save_obj.real_name = student_name
-                        save_obj.teacher_notes = final_notes # Use teacher's refined notes
-                        
+                        # Use teacher's refined notes with appended target words for temporary storage
+                        intended_words_for_saving = st.session_state.get("processed_intended_words")
+                        if intended_words_for_saving:
+                            if final_notes and final_notes.strip() not in ["No analysis available yet.", "AI analysis failed.", "Type your own diagnostic notes here..."]:
+                                final_notes_with_target = f"{final_notes}\n\nIntended Test Words: {intended_words_for_saving}"
+                            else:
+                                final_notes_with_target = f"Intended Test Words: {intended_words_for_saving}"
+                        else:
+                            final_notes_with_target = final_notes
+
+                        save_obj.teacher_notes = final_notes_with_target # Use teacher's refined notes with appended target words
+            
                         # Populate g-scores from display, with fallback to 0
                         save_obj.g0_phonemic_awareness = g_scores_to_save.get("g0", 0)
                         save_obj.g1_cvc_mapping = g_scores_to_save.get("g1", 0)
@@ -1027,10 +1071,10 @@ def display_assessment_workflow(student_id, student_name):
                         save_obj.g8_reduction_morphology = g_scores_to_save.get("g8", 0)
 
                         save_obj.suggested_next_groups = targets_to_save
-                        
+            
                         struggling_words = st.session_state.get("struggling_words_input", "")
                         teacher_observations = st.session_state.get("teacher_observations_input", "")
-                        
+            
                         # Get test template info (need to ensure it's selected in the UI)
                         templates = get_all_test_templates()
                         template_options = {t['test_name']: t for t in templates}
@@ -1038,7 +1082,7 @@ def display_assessment_workflow(student_id, student_name):
                         selected_template = template_options.get(selected_template_name)
                         test_template_id = selected_template.get('id') if selected_template else None
 
-                        save_assessment(save_obj, st.session_state.edited_transcription, teacher_refinement=final_notes, 
+                        save_assessment(save_obj, st.session_state.edited_transcription, teacher_refinement=final_notes_with_target, # Pass the modified notes
                                     struggling_words=struggling_words, teacher_id=current_teacher_email,
                                     teacher_observations=teacher_observations, test_template=test_template_id)
                         
@@ -1049,7 +1093,8 @@ def display_assessment_workflow(student_id, student_name):
                         for key in [
                             'uploaded_file', 'raw_transcription', 'edited_transcription', 'analysis_result',
                             'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
-                            'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key
+                            'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
+                            'intended_words_input', 'processed_intended_words' # Clear target words input
                         ]:
                             if key in st.session_state:
                                 del st.session_state[key]

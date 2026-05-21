@@ -403,6 +403,8 @@ Your task is to analyze the student's RECENT CLASSROOM OBSERVATIONS (Google Shee
 
 STUDENT: {student_alias}
 
+The intended target words for previous assessments (if applicable) were: {target_words}.
+
 ANALYSIS FOCUS:
 1. Review the contextual evidence (daily misspellings) above
 2. Identify which linguistic groups (g0-g8) are represented in these errors
@@ -480,7 +482,8 @@ Replace score_N with estimated percentage values (0-100) based on observational 
 Analyze the following spelling attempts for {student_alias}:
 {transcription_text}
 
-Compare them to: {target_words}
+You are grading a spelling assessment. The intended target words the student was trying to write are: {target_words}.
+Compare the student's handwritten attempts directly against this target list to identify exact misspellings, omissions, and phonics feature substitutions.
 
     STRICT RULES:
 - Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously
