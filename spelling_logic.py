@@ -210,22 +210,26 @@ class AssessmentSchema(BaseModel):
         description="Concise diagnostic summary including phonological vs orthographic issues"
     )
 # --- 3. VISION TRANSCRIPTION ---
-def transcribe_handwriting(base64_image):
-    target_words = get_target_words()
-    
+def transcribe_handwriting(base64_image, intended_words=None):
+    # Use provided intended_words or fall back to default
+    if intended_words and intended_words.strip():
+        words_for_prompt = intended_words
+    else:
+        words_for_prompt = get_target_words() # Fallback to primary_inventory.txt
+
     # This prompt forces the AI to be a 'dumb' camera, not a 'smart' assistant
     system_prompt = f"""
-    ROLE: Literal OCR Transcriber.
-    TASK: Transcribe handwritten words from a spelling test.
+    ROLE: Literal OCR Transcriber for a spelling assessment.
+    TASK: Transcribe handwritten words from a student's spelling test.
     
-    REFERENCE WORDS: {target_words}
+    The intended target words the student was trying to write are: {words_for_prompt}
     
     STRICT RULES:
-    1. DO NOT CORRECT SPELLING. If you see 'h-u-p', write 'hup', even if the word is 'hope'.
+    1. DO NOT CORRECT SPELLING. If you see 'h-u-p', write 'hup', even if the intended word is 'hope'.
     2. LOOK AT THE SHAPES. If a letter is ambiguous, choose the one that matches the ink.
     3. If a word is crossed out, ignore it.
-    4. If some lines are fainter than others, it could indicate that the student erased letters, ignore significantly fainter markings
-    5. FORMAT: target_word: student_attempt (e.g., fan: fan)
+    4. If some lines are fainter than others, it could indicate that the student erased letters; ignore significantly fainter markings.
+    5. FORMAT: intended_word: student_attempt (e.g., fan: fan) - IMPORTANT: You MUST match the intended word to the attempt on the same line if possible. If you can't identify the intended word for an attempt, use "UNKNOWN: student_attempt".
     """
     
     # Initialize GenAI client with new SDK structure
@@ -245,7 +249,7 @@ def transcribe_handwriting(base64_image):
                     {"type": "text", "text": system_prompt},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
-            } # <--- This closing brace was missing
+            }
         ],
         temperature=0.0 # Keep this at 0.0 for zero creativity!
     )
@@ -266,7 +270,8 @@ def transcribe_handwriting(base64_image):
 assessor = Agent(
     role="ESL Spelling and Phonology Assessor",
     goal=f"""
-    Analyze student spelling attempts against target words: {CURRENT_TEST_WORDS}.
+    Analyze student spelling attempts against the *provided target words*.
+    Explicitly compare the student's attempts to the *exact target words* given.
     
     Evaluate performance using a group-based system:
     - g0_phonemic_awareness
