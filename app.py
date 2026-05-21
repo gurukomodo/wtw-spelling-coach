@@ -993,18 +993,6 @@ def display_assessment_form():
             options=["None / New Student"] + existing_names,
             index=default_index
         )
-        # Inside your sidebar logic:
-        if page_selection == "Student":
-            from database_manager import get_all_students_by_teacher
-            students = get_all_students_by_teacher(st.session_state.user_email)
-            
-            if students:
-                student_names = {s['name']: s['id'] for s in students}
-                selected_name = st.sidebar.selectbox("Select Student", options=list(student_names.keys()))
-                st.session_state.selected_student_id = student_names[selected_name]
-            else:
-                st.sidebar.warning("Add a student in the Class page first.")
-
         # Initialize session state for new student
         if "pending_student_name" not in st.session_state:
             st.session_state.pending_student_name = ""
@@ -2198,7 +2186,7 @@ def display_admin_page():
             all_teachers_for_assign = get_all_teachers()
             if all_teachers_for_assign:
                 # Show teacher names in dropdown
-                teacher_options = [f"{t['name']} ({t['email']})" for t in existing_teachers]
+                teacher_options = [f"{t['name']} ({t['email']})" for t in all_teachers_for_assign]
                 teacher_display_options = [f"{t['name']} ({t['email']})" for t in teacher_options]
                 
                 col_bulk, col_btn = st.columns([3, 1])
