@@ -506,10 +506,6 @@ def display_class_page():
             if st.form_submit_button("Create Student Record"):
                 if name:
                     from database_manager import add_student
-                    if add_student(st.session_state.user_email, name, group):
-            if st.form_submit_button("Create Student Record"):
-                if name:
-                    from database_manager import add_student
                     if add_student(st.session_state.user_email, name, f"g{group}"):
                         st.success(f"Success! {name} added.")
                         st.rerun()
