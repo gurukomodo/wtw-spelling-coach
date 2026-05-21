@@ -82,6 +82,17 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # New table for named word lists
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS named_word_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id TEXT NOT NULL,
+            list_name TEXT NOT NULL UNIQUE,
+            target_words TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Commit after table creation
     conn.commit()
@@ -1451,6 +1462,58 @@ def allocate_student_to_teacher(student_identifier, teacher_email):
         return False, f"Error: {str(e)}"
     finally:
         conn.close()
+
+def save_named_list(teacher_id, list_name, target_words):
+    """Saves a named target word list for a teacher."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT OR REPLACE INTO named_word_lists (teacher_id, list_name, target_words)
+            VALUES (?, ?, ?)
+        ''', (teacher_id, list_name, target_words))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving named word list: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_named_lists(teacher_id):
+    """Retrieves all named word lists for a specific teacher."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT id, list_name, target_words FROM named_word_lists
+            WHERE teacher_id = ?
+            ORDER BY list_name
+        ''', (teacher_id,))
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        print(f"Error retrieving named word lists: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_named_list_by_id(list_id):
+    """Retrieves a specific named word list by its ID."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, list_name, target_words FROM named_word_lists WHERE id = ?", (list_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"Error retrieving named word list by ID: {e}")
+        return None
+    finally:
+        conn.close()
+
 
 import sqlite3
 import os

@@ -186,6 +186,8 @@ def initialize_session_state():
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
         ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False), ("logged_in", False), ("user_email", None),
         ("authenticated", False), ("role", None), ("intended_words_input", ""), ("processed_intended_words", ""),
+        ("current_word_list_mode", "select_existing"), # Default to selecting existing list
+        ("last_used_assessment_list_id", None), # For smart memory of last used list
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -837,14 +839,93 @@ def display_assessment_workflow(student_id, student_name):
 
     # Step 1: Define Assessment Target Words
     with st.expander("1. Define Assessment Target Words", expanded=True):
-        st.session_state.intended_words_input = st.text_area(
-            "Enter the intended words for this assessment (comma-separated or one per line):",
-            value=st.session_state.get("intended_words_input", ""),
-            height=150,
-            key=f"intended_words_input_{student_id}",
-            placeholder="e.g., cat, dog, run, jump\nor\ncat\ndog\nrun\njump"
+        current_teacher_email = st.session_state.get('user_email')
+        
+        # UI for selecting or creating a word list
+        st.session_state.current_word_list_mode = st.radio(
+            "Choose a word list method:",
+            options=["Select Existing List", "Create New List"],
+            key=f"word_list_mode_{student_id}",
+            index=0 if st.session_state.current_word_list_mode == "select_existing" else 1,
+            horizontal=True
         )
-        st.info("💡 Future Feature: Select from App-Generated Diagnostic Lists")
+
+        selected_list_name_display = None # To display selected list name
+
+        if st.session_state.current_word_list_mode == "Select Existing List":
+            named_lists = database_manager.get_named_lists(current_teacher_email)
+            
+            list_options = {"Select a saved list...": None}
+            for lst in named_lists:
+                list_options[lst['list_name']] = lst['id']
+            
+            # Smart memory: default to last used list if available and in options
+            default_index = 0
+            if st.session_state.get("last_used_assessment_list_id"):
+                last_used_list = database_manager.get_named_list_by_id(st.session_state.last_used_assessment_list_id)
+                if last_used_list and last_used_list['list_name'] in list_options:
+                    default_index = list(list_options.keys()).index(last_used_list['list_name'])
+            
+            selected_list_id = st.selectbox(
+                "Select an existing word list:",
+                options=list(list_options.keys()),
+                format_func=lambda x: x,
+                key=f"select_word_list_{student_id}",
+                index=default_index
+            )
+            
+            if selected_list_id and list_options[selected_list_id] is not None:
+                list_data = database_manager.get_named_list_by_id(list_options[selected_list_id])
+                if list_data:
+                    st.session_state.intended_words_input = list_data['target_words']
+                    st.session_state.current_list_id = list_data['id'] # Store ID for smart memory
+                    selected_list_name_display = list_data['list_name']
+                else:
+                    st.session_state.intended_words_input = ""
+                    st.session_state.current_list_id = None
+            else:
+                st.session_state.intended_words_input = ""
+                st.session_state.current_list_id = None
+            
+            if st.session_state.current_list_id:
+                st.info(f"Selected list: **{selected_list_name_display}** (ID: {st.session_state.current_list_id})")
+            else:
+                st.info("No list selected. Please create one or select from above.")
+
+
+        else: # Create New List
+            new_list_name = st.text_input(
+                "Name for this new word list (e.g., 'Weekly Spelling 1'):",
+                key=f"new_list_name_{student_id}"
+            )
+            st.session_state.intended_words_input = st.text_area(
+                "Enter the intended words (comma-separated or one per line):",
+                value=st.session_state.get("intended_words_input", ""), # Keep value if typed before switching modes
+                height=150,
+                key=f"intended_words_input_{student_id}",
+                placeholder="e.g., cat, dog, run, jump\nor\ncat\ndog\nrun\njump"
+            )
+            if st.button("Save New List", key=f"save_new_list_btn_{student_id}"):
+                if new_list_name and st.session_state.intended_words_input:
+                    success = database_manager.save_named_list(
+                        current_teacher_email,
+                        new_list_name.strip(),
+                        st.session_state.intended_words_input.strip()
+                    )
+                    if success:
+                        st.success(f"Word list '{new_list_name}' saved!")
+                        st.session_state.current_word_list_mode = "Select Existing List" # Switch to select after saving
+                        # Automatically select the newly saved list
+                        named_lists_after_save = database_manager.get_named_lists(current_teacher_email)
+                        for lst in named_lists_after_save:
+                            if lst['list_name'] == new_list_name.strip():
+                                st.session_state.last_used_assessment_list_id = lst['id']
+                                break
+                        st.rerun()
+                    else:
+                        st.error("Failed to save list. A list with this name might already exist.")
+                else:
+                    st.warning("Please provide both a name and words for the new list.")
 
     # Normalize target words for consistent passing
     if st.session_state.intended_words_input:
@@ -1091,12 +1172,20 @@ def display_assessment_workflow(student_id, student_name):
                         print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.edited_transcription[:15]}...")
                         
                         st.success(f"Assessment for {student_name} has been saved!")
+                        
+                        # Store the ID of the used list for "smart memory"
+                        if st.session_state.get('current_list_id'):
+                            st.session_state.last_used_assessment_list_id = st.session_state.current_list_id
+                        else:
+                            st.session_state.last_used_assessment_list_id = None
+
                         # Clear assessment-specific state after saving
                         for key in [
                             'uploaded_file', 'raw_transcription', 'edited_transcription', 'analysis_result',
                             'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
                             'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
-                            'intended_words_input', 'processed_intended_words' # Clear target words input
+                            'intended_words_input', 'processed_intended_words', 'current_list_id',
+                            f"new_list_name_{student_id}" # Clear new list name input
                         ]:
                             if key in st.session_state:
                                 del st.session_state[key]
