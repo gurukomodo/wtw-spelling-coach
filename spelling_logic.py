@@ -569,48 +569,50 @@ Replace score_N with actual percentage values (0-100).
     try:
         crew_output = crew.kickoff()
         
-        # If the crew actually gave us back the perfect structured Pydantic object:
-        if hasattr(crew_output, 'pydantic') and crew_output.pydantic is not None:
-            return crew_output.pydantic
+        # Robust JSON extraction from CrewOutput
+        raw_output = crew_output.raw if hasattr(crew_output, 'raw') else str(crew_output)
+        raw_output = raw_output.strip()
+
+        # Clean out markdown code blocks if the AI wrapped the JSON
+        if raw_output.startswith("```json"):
+            raw_output = raw_output.split("```json")[1].split("```")[0].strip()
+        elif raw_output.startswith("```"):
+            raw_output = raw_output.split("```")[1].split("```")[0].strip()
+
+        import json
+        try:
+            parsed_data = json.loads(raw_output)
+            # Pre-process to convert 'NA' strings to 0
+            processed_data = preprocess_crew_output(parsed_data)
+            # Create AssessmentSchema object from processed data
+            return AssessmentSchema(**processed_data)
+
+        except json.JSONDecodeError as e:
+            print(f"CRITICAL: Raw output was not valid JSON. Falling back to regex extraction. Raw: {raw_output}")
+            # Simple fallback to grab whatever text was returned if structure broke
+            # Attempt to find some text for teacher_notes if JSON failed entirely
+            fallback_notes = raw_output if len(raw_output) > 20 else f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually."
             
-        # If it just gave us raw text but didn't structure it:
-        if hasattr(crew_output, 'raw') and crew_output.raw:
-            # Try to parse the raw JSON into AssessmentSchema
-            try:
-                import json
-                raw_data = json.loads(crew_output.raw)
-                
-                # Pre-process to convert 'NA' strings to 0
-                processed_data = preprocess_crew_output(raw_data)
-                
-                # Create AssessmentSchema object from processed data
-                result = AssessmentSchema(**processed_data)
-                return result
-                
-            except json.JSONDecodeError as e:
-                print(f"JSON parsing error in run_scoring_crew: {e}")
-                return crew_output
-            except Exception as e:
-                print(f"AssessmentSchema creation error in run_scoring_crew: {e}")
-                return crew_output
-            
-        # Fallback if it returned something weird
-        return crew_output
+            return AssessmentSchema(
+                student_name="The Student",
+                teacher_notes=fallback_notes,
+                suggested_next_groups=["g1"],
+                g0_phonemic_awareness=0, g1_cvc_mapping=0, g2_digraphs=0,
+                g3_silent_e=0, g4_vowel_teams=0, g5_r_controlled=0,
+                g6_clusters=0, g7_multisyllabic=0, g8_reduction_morphology=0
+            )
         
     except Exception as e:
         print(f"Crew execution error in run_scoring_crew: {e}")
-        # Return a fake object so app.py doesn't see 'None' and crash!
-        class FallbackResult:
-            student_name = "The Student"  # PRIVACY: Use alias
-            teacher_notes = f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually."
-            suggested_next_groups = []
-            # Fill in 0s so the UI metrics don't break
-            g0_phonemic_awareness = 0; g1_cvc_mapping = 0; g2_digraphs = 0
-            g3_silent_e = 0; g4_vowel_teams = 0; g5_r_controlled = 0
-            g6_clusters = 0; g7_multisyllabic = 0; g8_reduction_morphology = 0
-            raw = f"Analysis timed out or failed. Technical details: {e}"
-            
-        return FallbackResult()
+        # Return a robust pydantic object so app.py doesn't crash
+        return AssessmentSchema(
+            student_name="The Student",
+            teacher_notes=f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually.",
+            suggested_next_groups=[],
+            g0_phonemic_awareness=0, g1_cvc_mapping=0, g2_digraphs=0,
+            g3_silent_e=0, g4_vowel_teams=0, g5_r_controlled=0,
+            g6_clusters=0, g7_multisyllabic=0, g8_reduction_morphology=0
+        )
 
 # --- 5. PERSONALIZED WORD GENERATION ---
 # Agent for generating personalized practice words

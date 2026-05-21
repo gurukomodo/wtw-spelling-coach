@@ -994,10 +994,10 @@ def display_assessment_workflow(student_id, student_name):
                             # We keep the raw result to allow the analysis crew to process it as is.
                             cleaned_text = result_text # Use raw result directly
                             
-                            st.session_state['edited_transcription'] = cleaned_text
-                            st.session_state['raw_transcription'] = cleaned_text
+                            st.session_state[f'edited_transcription_{student_id}'] = cleaned_text
+                            st.session_state['raw_transcription'] = cleaned_text # Keep raw for potential debugging/diffing if needed
                             st.session_state['processing'] = False
-                            print(f"DEBUG: Saved to state: {st.session_state['edited_transcription'][:20]}...")
+                            print(f"DEBUG: Saved to state: {st.session_state[f'edited_transcription_{student_id}'][:20]}...")
                         else:
                             st.error("AI returned empty string for transcription.")
                             st.session_state['processing'] = False
@@ -1013,7 +1013,7 @@ def display_assessment_workflow(student_id, student_name):
             
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                value=st.session_state.get("edited_transcription", ""),
+                value=st.session_state.get(f"edited_transcription_{student_id}", ""),
                 height=200,
                 key=f"edited_transcription_{student_id}" # Use student_id in key for uniqueness
             )
@@ -1038,6 +1038,7 @@ def display_assessment_workflow(student_id, student_name):
                     with st.spinner("Running AI analysis..."):
                         try:
                             # Sync Step 3 data to Step 5 report field
+                            st.session_state.edited_transcription = edited_text
                             st.session_state['student_attempts_for_report'] = st.session_state.edited_transcription
                             print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
                             
@@ -1064,7 +1065,6 @@ def display_assessment_workflow(student_id, student_name):
                             st.session_state.final_diagnostic_notes = teacher_notes
                             print(f"DEBUG: AI Analysis complete. Teacher notes extracted: {bool(teacher_notes)}")
                             
-                            st.success("Analysis complete! Review and confirm below.")
                             st.session_state.analysis_result = analysis_result # Store full object for later use
                             
                             # Extract G-scores and targets
@@ -1083,6 +1083,9 @@ def display_assessment_workflow(student_id, student_name):
 
                             st.session_state.g_scores_display = g_scores
                             st.session_state.targets_display = suggested_groups
+                            
+                            st.success("Analysis complete! Review and confirm below.")
+                            st.rerun()
 
                         except Exception as e:
                             st.error(f"Failed to run AI analysis: {e}. Please check your input and try again.")
@@ -1097,18 +1100,33 @@ def display_assessment_workflow(student_id, student_name):
             with col1:
                 st.text_area(
                     "Student's Spelling Attempts", 
-                    value=st.session_state.get("student_attempts_for_report", ""),
+                    value=st.session_state.get('student_attempts_for_report', ''),
                     height=400,
-                    key=f"student_attempts_for_report_{student_id}"
+                    key="student_attempts_for_report"
                 )
             
             with col2:
-                final_notes_value = st.session_state.get('final_diagnostic_notes', '')
+                # Group Focus Suggestion - Dynamic from constants
+                group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
+                ai_suggested_list = st.session_state.get('targets_display', [])
+                ai_suggested = ai_suggested_list[0] if ai_suggested_list else 'g1'
+                if ai_suggested not in group_keys:
+                    ai_suggested = 'g1'
+                default_index = group_keys.index(ai_suggested)
+
+                st.selectbox(
+                    "Suggested Group Focus (Adjust if needed):",
+                    options=group_keys,
+                    index=default_index,
+                    format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
+                    key="teacher_refined_group"
+                )
+
                 final_notes = st.text_area(
                     "Final Diagnostic Notes (The 'Gold Standard')", 
-                    value=final_notes_value if final_notes_value and final_notes_value not in ["No analysis available yet.", "AI analysis failed."] else "Type your own diagnostic notes here...", 
+                    value=st.session_state.get('final_diagnostic_notes', ''), 
                     height=400,
-                    key=f"final_diagnostic_notes_{student_id}"
+                    key="final_diagnostic_notes"
                 )
             
             # Save Button
@@ -1123,7 +1141,10 @@ def display_assessment_workflow(student_id, student_name):
                     try:
                         analysis_result = st.session_state.analysis_result
                         g_scores_to_save = st.session_state.get("g_scores_display", {})
-                        targets_to_save = st.session_state.get("targets_display", [])
+                        
+                        # Use teacher refined group focus
+                        refined_group = st.session_state.get("teacher_refined_group", "g1")
+                        targets_to_save = [refined_group]
                         
                         class SaveObject:
                             pass
@@ -1185,7 +1206,7 @@ def display_assessment_workflow(student_id, student_name):
                             'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
                             'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
                             'intended_words_input', 'processed_intended_words', 'current_list_id',
-                            f"new_list_name_{student_id}" # Clear new list name input
+                            f"new_list_name_{student_id}", 'teacher_refined_group' # Clear new list name input
                         ]:
                             if key in st.session_state:
                                 del st.session_state[key]
@@ -1656,3 +1677,4 @@ def display_admin_page():
 # =============================================================================
 if __name__ == "__main__":
     main()
+
