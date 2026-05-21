@@ -645,6 +645,8 @@ def display_student_detail_view(student_id, current_teacher_email):
 
                     except Exception as e:
                         st.error(f"Failed to run global analysis: {str(e)}. Please check AI service status.")
+            except Exception as e: # Catch any errors from the main try block within the button
+                st.error(f"An unexpected error occurred during the 'Refresh Coaching Plan' process: {e}")
 
     progress_review_key = f'progress_review_{student_id}'
     if st.session_state.get(progress_review_key):
