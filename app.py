@@ -495,11 +495,10 @@ def display_class_page():
     with st.expander("➕ Add New Student"):
         with st.form("add_new_student", clear_on_submit=True):
             name = st.text_input("Full Name")
-            from constants import DIAGNOSTIC_GROUPS
             group = st.selectbox(
                 "Assign to Group",
-                options=list(DIAGNOSTIC_GROUPS.keys()),
-                format_func=lambda x: DIAGNOSTIC_GROUPS[x],
+                options=list(constants.DIAGNOSTIC_GROUPS.keys()),
+                format_func=lambda x: constants.DIAGNOSTIC_GROUPS[x],
                 index=1
             )
 
@@ -598,8 +597,7 @@ def display_student_detail_view(student_id):
 
                     # Get current G-Level from latest assessment
                     current_g_level = latest_assessment.get('suggested_next', 'g1')
-from constants import DIAGNOSTIC_GROUPS
-                    g_scores = {gid: latest_assessment.get(field, 0) for gid, field in DIAGNOSTIC_GROUPS.items()}
+                    g_scores = {gid: latest_assessment.get(field, 0) for gid, field in constants.DIAGNOSTIC_GROUPS.items()}
 
                     # Run progress review analysis
                     analysis_result = run_scoring_crew(
