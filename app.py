@@ -498,14 +498,14 @@ def display_class_page():
             group = st.selectbox(
                 "Assign to Group",
                 options=list(constants.DIAGNOSTIC_GROUPS.keys()),
-                format_func=lambda x: constants.DIAGNOSTIC_GROUPS[x],
+                format_func=lambda x: constants.DIAGNOSTIC_GROUPS[x]['name'],
                 index=1
             )
 
             if st.form_submit_button("Create Student Record"):
                 if name:
                     from database_manager import add_student
-                    if add_student(st.session_state.user_email, name, f"g{group}"):
+                    if add_student(st.session_state.user_email, name, group): # Changed from f"g{group}" to group
                         st.success(f"Success! {name} added.")
                         st.rerun()
                 else:
