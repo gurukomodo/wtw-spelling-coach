@@ -23,7 +23,8 @@ from database_manager import (
     get_student_id_by_name, save_student_identity, get_student_name, get_pseudonym,
     generate_pseudonym, save_assessment, save_ai_report, get_name_for_id,
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
-    save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data
+    save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data,
+    save_named_list, get_named_lists, get_named_list_by_id
 )
 import constants
 
