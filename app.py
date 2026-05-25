@@ -612,14 +612,10 @@ def display_student_detail_view(student_id, current_teacher_email):
             st.rerun()
 
     # Use student-specific key for classroom data
-    classroom_data_key = f'classroom_data_{student_id}'
+    classroom_data_key = f"shadow_data_{student_id}"
 
     st.divider()
-    # Display classroom data if available for this student
-    if st.session_state.get(classroom_data_key):
-        st.subheader("Classroom Data")
-        st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
-    
+
     # Diagnostic Assessment History Section
     st.subheader("Diagnostic Assessment History")
     
@@ -659,6 +655,16 @@ def display_student_detail_view(student_id, current_teacher_email):
 
     st.divider()
 
+    # Display classroom data if available for this student (moved to be before Add New Assessment)
+    # Ensure the key is consistently defined as f"shadow_data_{student_id}"
+    if st.session_state.get(classroom_data_key):
+        st.subheader("Classroom Data")
+        st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
+    else:
+        st.info("No classroom observation data recorded yet. Ensure Google Sheet URL is configured in settings.")
+    
+    st.divider()
+
     # Add New Assessment section with Step 1-5 workflow
     st.subheader("Add New Assessment")
     display_assessment_workflow(student_id, student_name)
@@ -670,7 +676,7 @@ def display_assessment_workflow(student_id, student_name):
     sheet_url = current_settings.get('google_sheet_url', '')
 
     # Use student-specific key for classroom data
-    classroom_data_key = f'classroom_data_{student_id}'
+    classroom_data_key = f"shadow_data_{student_id}"
     
     # Step 1: Define Assessment Target Words
     with st.expander("1. Define Assessment Target Words", expanded=True):
