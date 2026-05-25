@@ -612,78 +612,11 @@ def display_student_detail_view(student_id, current_teacher_email):
             st.rerun()
 
     st.divider()
-
-    # AI Coach Report section
-    st.subheader("AI Coach Report")
-    st.caption("Generate a comprehensive coaching report based on student's history.")
+# Display classroom data if available for this student
+    if st.session_state.get(classroom_data_key):
+        st.subheader("Classroom Data")
+        st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
     
-    # Display editable report if in edit mode
-    edit_key = f'edit_mode_{student_id}'
-    if st.session_state.get(edit_key, False):
-        raw_report = st.session_state.get(f'raw_report_{student_id}', '')
-        
-        st.markdown("---*")
-        st.subheader(f"AI Coaching Report for {student_name}")
-        st.caption("Review and edit the AI's suggestions before saving.")
-        
-        edited_report = st.text_area(
-            "Coach Report (editable)",
-            value=raw_report,
-            height=300,
-            key=f'report_editor_{student_id}'
-        )
-        
-        col_save1, col_save2 = st.columns([1, 4])
-        with col_save1:
-            if st.button("Confirm & Save Report", key=f'save_report_{student_id}', type="primary"):
-                if edited_report.strip():
-                    try:
-                        save_ai_report(
-                            student_id=student_id,
-                            teacher_id=current_teacher_email,
-                            report_content=edited_report
-                        )
-                        st.success(f"Report saved for {student_name}!")
-                        st.session_state[edit_key] = False
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to save AI report: {e}. Please try again.")
-                else:
-                    st.warning("Report cannot be empty.")
-        with col_save2:
-            if st.button("Discard", key=f'discard_report_{student_id}'):
-                st.session_state[edit_key] = False
-                st.rerun()
-        st.markdown("---*")
-        
-    st.divider()
-
-    # Display AI Coaching button here, separate from the main flow
-    if st.button(f"Generate AI Coach Report for {student_name}", key=f"ai_{student_id}"):
-        with st.spinner(f"Consulting AI about {student_name} (pseudonym: {get_pseudonym(current_teacher_email, student_id)})..."):
-            try:
-                history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
-                from spelling_logic import get_ai_coaching_report
-                
-                # Assuming current_g_level is available from the latest assessment or student profile
-                latest_assessment = history[-1] if history else {}
-                student_g_level = latest_assessment.get('suggested_next', 'g1')
-                
-                raw_report = get_ai_coaching_report(
-                    student_alias=get_pseudonym(current_teacher_email, student_id), 
-                    g_level=student_g_level, 
-                    history=history
-                )
-                st.session_state[f'raw_report_{student_id}'] = raw_report
-                st.session_state[f'edit_mode_{student_id}'] = True
-                st.success("AI coaching report generated!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to generate AI coach report: {str(e)}. Please check AI service status and student history.")
-                st.session_state[f'edit_mode_{student_id}'] = False # Ensure edit mode is off
-
-    st.divider()
-
     # Diagnostic Assessment History Section
     st.subheader("Diagnostic Assessment History")
     
@@ -855,10 +788,6 @@ def display_assessment_workflow(student_id, student_name):
         except Exception as e:
             st.error(f"Failed to fetch classroom data: {e}. Please check the Google Sheet URL and permissions.")
     
-    # Display classroom data if available for this student
-    if st.session_state.get(classroom_data_key):
-        st.subheader("Classroom Data")
-        st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
     
     # Step 2: Photo Upload
     st.subheader("Step 2: Upload Photo")
