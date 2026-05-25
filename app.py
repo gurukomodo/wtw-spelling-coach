@@ -611,8 +611,11 @@ def display_student_detail_view(student_id, current_teacher_email):
             del st.session_state[practice_list_key]
             st.rerun()
 
+    # Use student-specific key for classroom data
+    classroom_data_key = f'classroom_data_{student_id}'
+
     st.divider()
-# Display classroom data if available for this student
+    # Display classroom data if available for this student
     if st.session_state.get(classroom_data_key):
         st.subheader("Classroom Data")
         st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
@@ -666,9 +669,6 @@ def display_assessment_workflow(student_id, student_name):
     current_settings = get_teacher_settings(current_teacher_email)
     sheet_url = current_settings.get('google_sheet_url', '')
     
-    # Use student-specific key for classroom data
-    classroom_data_key = f'classroom_data_{student_id}'
-
     # Step 1: Define Assessment Target Words
     with st.expander("1. Define Assessment Target Words", expanded=True):
         current_teacher_email = st.session_state.get('user_email')
