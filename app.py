@@ -7,6 +7,7 @@ import random
 import csv
 import time
 import base64
+import database_manager as db
 from datetime import datetime
 
 from utils import preprocess_image
@@ -24,9 +25,13 @@ from database_manager import (
     generate_pseudonym, save_assessment, save_ai_report, get_name_for_id,
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
     save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data,
-    save_named_list, get_named_lists, get_named_list_by_id
+    save_named_list, get_named_lists, get_named_list_by_id, init_correction_tables,
+    get_historical_corrections, delete_specific_correction
 )
 import constants
+
+# Initialize correction tables on boot
+init_correction_tables()
 
 # =============================================================================
 # PAGE CONFIG
@@ -1671,6 +1676,39 @@ def display_admin_page():
                         st.rerun()
         else:
             st.success("All students are assigned to a teacher.")
+
+    st.markdown("---")
+
+    # Platform Administrator Report: Active AI Corrections
+    st.subheader("Platform Administrator Report: Active AI Corrections")
+
+    corrections = get_historical_corrections(limit=50)
+
+    if not corrections:
+        st.info("No AI corrections recorded yet.")
+    else:
+        # Display corrections in a clean table structure
+        for correction in corrections:
+            row_id, word_tested, ai_transcription, teacher_transcription, context_notes = correction
+
+            with st.container():
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 3, 1])
+                with col1:
+                    st.text(f"Word: {word_tested}")
+                with col2:
+                    st.text(f"AI: {ai_transcription}")
+                with col3:
+                    st.text(f"Teacher: {teacher_transcription}")
+                with col4:
+                    st.text(f"Notes: {context_notes or 'N/A'}")
+                with col5:
+                    if st.button("Forget This", key=f"forget_{row_id}", type="secondary"):
+                        if delete_specific_correction(row_id):
+                            st.success(f"Forgotten correction for '{word_tested}'")
+                            st.rerun()
+                        else:
+                            st.error("Failed to forget correction")
+                st.markdown("---")
 
 # =============================================================================
 # RUN THE APP
