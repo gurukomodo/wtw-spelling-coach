@@ -668,6 +668,9 @@ def display_assessment_workflow(student_id, student_name):
     current_teacher_email = st.session_state.get('user_email')
     current_settings = get_teacher_settings(current_teacher_email)
     sheet_url = current_settings.get('google_sheet_url', '')
+
+    # Use student-specific key for classroom data
+    classroom_data_key = f'classroom_data_{student_id}'
     
     # Step 1: Define Assessment Target Words
     with st.expander("1. Define Assessment Target Words", expanded=True):
