@@ -1803,3 +1803,68 @@ def add_student(teacher_id, real_name, target_group="g1"):
         return False
     finally:
         conn.close()
+
+# ============================================================
+# ADAPTIVE AI MEMORY FOR CONTINUOUS LEARNING
+# ============================================================
+def init_correction_tables():
+    """Initializes the table that stores AI vs Teacher discrepancies."""
+    conn = sqlite3.connect('spelling_coach.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assessment_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            word_tested TEXT,
+            ai_transcription TEXT,
+            teacher_transcription TEXT,
+            error_type TEXT, -- e.g., "letter_reversal", "phonetic_substitution"
+            context_notes TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def log_teacher_correction(word_tested, ai_val, teacher_val, error_type="", notes=""):
+    """Saves a single correction instance to serve as long-term AI memory."""
+    conn = sqlite3.connect('spelling_coach.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO assessment_corrections (word_tested, ai_transcription, teacher_transcription, error_type, context_notes)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (word_tested, ai_val, teacher_val, error_type, notes))
+    
+    conn.commit()
+    conn.close()
+
+def get_historical_corrections(limit=10):
+    """Pulls recent corrections to inject into the CrewAI prompt instructions."""
+    conn = sqlite3.connect('spelling_coach.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, word_tested, ai_transcription, teacher_transcription, context_notes 
+        FROM assessment_corrections 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+    ''', (limit,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_specific_correction(correction_id):
+    """Deletes a specific teacher correction record by ID."""
+    conn = sqlite3.connect('spelling_coach.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM assessment_corrections WHERE id = ?", (correction_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting correction: {e}")
+        return False
+    finally:
+        conn.close()

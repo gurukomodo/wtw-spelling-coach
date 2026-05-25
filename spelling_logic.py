@@ -368,11 +368,24 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
         intended_words: Optional comma-separated list of target words (from test template)
         analysis_complexity: "Brief", "Standard", or "Detailed" analysis level
     """
+    from database_manager import get_historical_corrections
+
     # Use provided words or fall back to global default
     target_words = intended_words if intended_words else CURRENT_TEST_WORDS
 
     # PRIVACY: Always use 'The Student' alias in AI prompts
     student_alias = "The Student"
+
+    # 0. GATHER MEMORY CONTEXT FROM HISTORICAL CORRECTIONS
+    historical_records = get_historical_corrections(student_id, limit=5)
+    memory_entries = []
+    for rec in historical_records:
+        entry_date = rec.get('created_at', 'Unknown Date')[:10]
+        orig = rec.get('original_transcription', 'N/A')
+        corr = rec.get('corrected_transcription', 'N/A')
+        memory_entries.append(f"[{entry_date}] Mistake: '{orig}' was corrected to: '{corr}'")
+
+    memory_context = "\n".join(memory_entries) if memory_entries else "No historical transcription corrections on record."
 
     # Detect progress review mode (no new handwriting)
     is_progress_review = not transcription_text or transcription_text.strip() == ""
@@ -380,7 +393,6 @@ def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow
     # 1. FETCH PREVIOUS FEEDBACK
     past_feedback = get_latest_teacher_notes(student_id)
     feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR {student_alias}: {past_feedback}" if past_feedback else ""
-    
     # 2. ADD SHADOW DATA CONTEXT (Contextual Evidence)
     shadow_context = ""
     if shadow_data:
