@@ -564,156 +564,8 @@ def display_student_detail_view(student_id, current_teacher_email):
         if latest.get('suggested_next'):
             target_group = latest.get('suggested_next', 'g1')
     
-    # Display only specific word analysis data used for coaching
-    st.subheader("Word Analysis Data")
-    
-    # Display current struggling words in a 3-column grid
-    if struggles:
-        st.write("**Current Struggling Words:**")
-        filtered_struggles = [w.strip() for w in struggles if w.strip()]
-        cols = st.columns(3)
-        for i, word in enumerate(filtered_struggles):
-            cols[i % 3].write(f"• {word}")
-    
-    # Display current mastered words
-    if mastered:
-        st.write("**Current Mastered Words:**")
-        for word in mastered:
-            if word.strip():
-                st.write(f"• {word.strip()}")
-    
-    if not struggles and not mastered:
-        st.info("No word analysis data recorded yet.")
-
     st.divider()
 
-    # Run Global Analysis section
-    st.subheader("Global Analysis")
-    st.caption("Generate coaching report and practice list from existing data without new photo upload")
-
-    if st.button("🔄 Refresh Coaching Plan", key=f"refresh_analysis_{student_id}"):
-        with st.spinner("Running global analysis..."):
-            try:
-                # Fetch latest classroom data from Google Sheets
-                current_settings = get_teacher_settings(current_teacher_email)
-                sheet_url = current_settings.get('google_sheet_url', '')
-
-                shadow_data = []
-                if sheet_url:
-                    try:
-                        shadow_data_result = get_sheet_data(sheet_url, student_name, None)
-                        if isinstance(shadow_data_result, dict) and "error" in shadow_data_result:
-                            st.error(f"Failed to fetch Google Sheet data: {shadow_data_result['error']}")
-                            shadow_data = [] # Ensure shadow_data is empty on error
-                        elif isinstance(shadow_data_result, list):
-                            shadow_data = shadow_data_result
-                            if shadow_data:
-                                st.success(f"Fetched {len(shadow_data)} entries from Google Sheets")
-                            else:
-                                st.info(f"No recent classroom observations found for '{student_name}' in Google Sheet.")
-                        else:
-                            st.error(f"Unexpected response from Google Sheet fetch: {shadow_data_result}")
-                            shadow_data = []
-                    except Exception as e:
-                        st.error(f"Failed to fetch Google Sheet data: {e}. Please check the URL and permissions.")
-                        shadow_data = [] # Ensure shadow_data is empty on error
-
-                # Get most recent assessment scores
-                latest_assessment = None
-                if history:
-                    latest_assessment = history[-1]
-                    st.info(f"Using latest assessment from {latest_assessment.get('created_at', 'unknown date')}")
-
-                if not latest_assessment:
-                    st.error("No assessment data found. Please complete an assessment first.")
-                else:
-                    # Prepare data for progress review analysis
-                    transcription_text = ""  # Empty = progress review mode
-                    current_g_level = latest_assessment.get('suggested_next', 'g1')
-                    g_scores = {gid: latest_assessment.get(field, 0) for gid, field in constants.DIAGNOSTIC_GROUPS.items()}
-
-                    try:
-                        analysis_result = run_scoring_crew(
-                            student_id,
-                            transcription_text,
-                            intended_words="",
-                            shadow_data=shadow_data,
-                            analysis_complexity="Standard"
-                        )
-
-                        st.session_state[f'progress_review_{student_id}'] = {
-                            'analysis_result': analysis_result,
-                            'current_g_level': current_g_level,
-                            'g_scores': g_scores,
-                            'shadow_data_count': len(shadow_data) if shadow_data else 0
-                        }
-
-                        st.success("Progress review complete! Review and confirm the group allocation below.")
-                        st.rerun()
-
-                    except Exception as e:
-                        st.error(f"Failed to run global analysis: {str(e)}. Please check AI service status.")
-            except Exception as e: # Catch any errors from the main try block within the button
-                st.error(f"An unexpected error occurred during the 'Refresh Coaching Plan' process: {e}")
-
-    progress_review_key = f'progress_review_{student_id}'
-    if st.session_state.get(progress_review_key):
-        review_data = st.session_state[progress_review_key]
-        analysis_result = review_data['analysis_result']
-        current_g_level = review_data['current_g_level']
-        g_scores = review_data['g_scores']
-        shadow_data_count = review_data['shadow_data_count']
-
-        st.subheader("Progress Review Results")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.write("**Current Group Allocation:**")
-            st.metric("Current G-Level", current_g_level)
-            st.write("**Current Scores:**")
-            for g, score in g_scores.items():
-                st.write(f"{g.upper()}: {score}%")
-
-        with col2:
-            st.write("**AI Analysis Based on Google Sheet Data:**")
-            teacher_notes = getattr(analysis_result, 'teacher_notes', '')
-            st.write(teacher_notes)
-
-            suggested_groups = getattr(analysis_result, 'suggested_next_groups', [])
-            st.write(f"**Suggested Groups:** {', '.join(suggested_groups)}")
-
-        if shadow_data_count > 0:
-            st.write(f"**Evidence Source:** Based on {shadow_data_count} recent classroom observations from Google Sheets")
-
-        st.subheader("Confirm Group Allocation")
-        suggested_g_level = suggested_groups[0] if suggested_groups else current_g_level
-
-        col_confirm, col_override = st.columns([1, 2])
-
-        with col_confirm:
-            if st.button("✅ Confirm Suggested Group", key=f"confirm_group_{student_id}"):
-                # This logic should update the student's group (e.g., in latest assessment or profile)
-                st.success(f"Group allocation updated to {suggested_g_level}")
-                del st.session_state[progress_review_key]
-                st.rerun()
-
-        with col_override:
-            override_options = list(constants.DIAGNOSTIC_GROUPS.keys())
-            override_selection = st.selectbox(
-                "Or manually select a different group:",
-                override_options,
-                index=override_options.index(current_g_level) if current_g_level in override_options else 1,
-                key=f"override_group_{student_id}"
-            )
-
-            if st.button("📝 Override with Manual Selection", key=f"override_btn_{student_id}"):
-                st.success(f"Group allocation manually set to {override_selection}")
-                del st.session_state[progress_review_key]
-                st.rerun()
-
-        st.divider()
-    
     # Section for AI-Generated Practice Lists
     st.subheader("AI-Generated Practice Lists")
     if st.button("✨ Generate Personalized Practice Lists", key=f"gen_practice_{student_id}"):
@@ -765,30 +617,6 @@ def display_student_detail_view(student_id, current_teacher_email):
     st.subheader("AI Coach Report")
     st.caption("Generate a comprehensive coaching report based on student's history.")
     
-    # AI Coaching button for each student
-    if st.button(f"Generate AI Coach Report for {student_name}", key=f"ai_{student_id}"):
-        with st.spinner(f"Consulting AI about {student_name} (pseudonym: {get_pseudonym(current_teacher_email, student_id)})..."):
-            try:
-                history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
-                from spelling_logic import get_ai_coaching_report
-                
-                # Assuming current_g_level is available from the latest assessment or student profile
-                latest_assessment = history[-1] if history else {}
-                student_g_level = latest_assessment.get('suggested_next', 'g1')
-                
-                raw_report = get_ai_coaching_report(
-                    student_alias=get_pseudonym(current_teacher_email, student_id), 
-                    g_level=student_g_level, 
-                    history=history
-                )
-                st.session_state[f'raw_report_{student_id}'] = raw_report
-                st.session_state[f'edit_mode_{student_id}'] = True
-                st.success("AI coaching report generated!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to generate AI coach report: {str(e)}. Please check AI service status and student history.")
-                st.session_state[f'edit_mode_{student_id}'] = False # Ensure edit mode is off
-
     # Display editable report if in edit mode
     edit_key = f'edit_mode_{student_id}'
     if st.session_state.get(edit_key, False):
@@ -830,7 +658,72 @@ def display_student_detail_view(student_id, current_teacher_email):
         
     st.divider()
 
-    # Add Assessment section with Step 1-5 workflow
+    # Display AI Coaching button here, separate from the main flow
+    if st.button(f"Generate AI Coach Report for {student_name}", key=f"ai_{student_id}"):
+        with st.spinner(f"Consulting AI about {student_name} (pseudonym: {get_pseudonym(current_teacher_email, student_id)})..."):
+            try:
+                history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
+                from spelling_logic import get_ai_coaching_report
+                
+                # Assuming current_g_level is available from the latest assessment or student profile
+                latest_assessment = history[-1] if history else {}
+                student_g_level = latest_assessment.get('suggested_next', 'g1')
+                
+                raw_report = get_ai_coaching_report(
+                    student_alias=get_pseudonym(current_teacher_email, student_id), 
+                    g_level=student_g_level, 
+                    history=history
+                )
+                st.session_state[f'raw_report_{student_id}'] = raw_report
+                st.session_state[f'edit_mode_{student_id}'] = True
+                st.success("AI coaching report generated!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to generate AI coach report: {str(e)}. Please check AI service status and student history.")
+                st.session_state[f'edit_mode_{student_id}'] = False # Ensure edit mode is off
+
+    st.divider()
+
+    # Diagnostic Assessment History Section
+    st.subheader("Diagnostic Assessment History")
+    
+    # Reuse the 'history' fetched at the top of display_student_detail_view
+    if history:
+        history_data = []
+        for assessment in history:
+            # Attempt to get the list name from the test_template_id if available
+            test_name = "N/A"
+            if assessment.get('test_template_id'):
+                template_data = get_test_template(assessment['test_template_id'])
+                if template_data:
+                    test_name = template_data.get('test_name', 'Unnamed Test')
+            elif assessment.get('intended_words'):
+                # Fallback to intended words if no template ID (e.g., ad-hoc assessments)
+                words = assessment['intended_words'].split(',')
+                test_name = f"{len(words)} words"
+            else:
+                test_name = "Ad-hoc Assessment"
+
+            g_level_score = assessment.get('g_level_score', 'N/A')
+            # Extract date part only
+            created_at = assessment.get('created_at', 'N/A')
+            date_only = created_at.split(' ')[0] if created_at and ' ' in created_at else created_at
+            
+            history_data.append({
+                "Assessment Name": test_name,
+                "Date": date_only,
+                "Suggested Group": assessment.get('suggested_next', 'N/A').upper(),
+            })
+        
+        # Display in a dataframe, reversed to show most recent first
+        df_history = pd.DataFrame(history_data[::-1]) 
+        st.dataframe(df_history, use_container_width=True, hide_index=True)
+    else:
+        st.info("No diagnostic assessments recorded yet for this student.")
+
+    st.divider()
+
+    # Add New Assessment section with Step 1-5 workflow
     st.subheader("Add New Assessment")
     display_assessment_workflow(student_id, student_name)
 
@@ -965,10 +858,7 @@ def display_assessment_workflow(student_id, student_name):
     # Display classroom data if available for this student
     if st.session_state.get(classroom_data_key):
         st.subheader("Classroom Data")
-        st.write(f"Found {len(st.session_state[classroom_data_key])} recent observations:")
-        
-        for entry in st.session_state[classroom_data_key][:5]:  # Show latest 5
-            st.write(f"• {entry.get('incorrect', '')} → {entry.get('intended', '')}")
+        st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
     
     # Step 2: Photo Upload
     st.subheader("Step 2: Upload Photo")
