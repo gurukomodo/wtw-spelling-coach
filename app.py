@@ -802,22 +802,7 @@ def display_assessment_workflow(student_id, student_name):
     else:
         st.session_state.processed_intended_words = "" # Ensure it's empty if no input
     
-    if sheet_url and not st.session_state.get(classroom_data_key):
-        # Fetch classroom data for this student
-        try:
-            shadow_data_result = get_sheet_data(sheet_url, student_name, None)
-            if isinstance(shadow_data_result, dict) and "error" in shadow_data_result:
-                st.error(f"Failed to fetch classroom data: {shadow_data_result['error']}")
-            elif isinstance(shadow_data_result, list):
-                st.session_state[classroom_data_key] = shadow_data_result # Correctly use classroom_data_key
-                if shadow_data_result:
-                    print(f"DEBUG: Fetched {len(shadow_data_result)} classroom data entries for {student_name}")
-                else:
-                    st.info(f"No recent classroom observations found for '{student_name}' in Google Sheet.")
-            else:
-                st.error(f"Unexpected response from classroom data fetch: {shadow_data_result}")
-        except Exception as e:
-            st.error(f"Failed to fetch classroom data: {e}. Please check the Google Sheet URL and permissions.")
+    # Data fetching for classroom data is now handled in display_student_detail_view
     
     
     # Step 2: Photo Upload
