@@ -1816,6 +1816,7 @@ def init_correction_tables():
         CREATE TABLE IF NOT EXISTS assessment_corrections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            student_id TEXT, -- Added student_id column
             word_tested TEXT,
             ai_transcription TEXT,
             teacher_transcription TEXT,
@@ -1824,17 +1825,27 @@ def init_correction_tables():
         )
     ''')
     conn.commit()
+    
+    # Add schema repair for existing databases
+    cursor.execute("PRAGMA table_info(assessment_corrections)")
+    correction_cols = [col[1] for col in cursor.fetchall()]
+    if "student_id" not in correction_cols:
+        cursor.execute("ALTER TABLE assessment_corrections ADD COLUMN student_id TEXT")
+        print("Schema Repair: Added student_id column to assessment_corrections.")
+    
+    conn.commit()
     conn.close()
 
-def log_teacher_correction(word_tested, ai_val, teacher_val, error_type="", notes=""):
+
+def log_teacher_correction(student_id, word_tested, ai_val, teacher_val, error_type="", notes=""):
     """Saves a single correction instance to serve as long-term AI memory."""
     conn = sqlite3.connect('spelling_coach.db')
     cursor = conn.cursor()
     
     cursor.execute('''
-        INSERT INTO assessment_corrections (word_tested, ai_transcription, teacher_transcription, error_type, context_notes)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (word_tested, ai_val, teacher_val, error_type, notes))
+        INSERT INTO assessment_corrections (student_id, word_tested, ai_transcription, teacher_transcription, error_type, context_notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (student_id, word_tested, ai_val, teacher_val, error_type, notes))
     
     conn.commit()
     conn.close()
@@ -1848,7 +1859,7 @@ def get_historical_corrections(student_id=None, limit=10):
     cursor = conn.cursor()
     
     query = '''
-        SELECT id, word_tested, ai_transcription, teacher_transcription, context_notes 
+        SELECT id, student_id, word_tested, ai_transcription, teacher_transcription, context_notes 
         FROM assessment_corrections 
     '''
     params = []
