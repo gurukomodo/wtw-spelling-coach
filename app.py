@@ -787,7 +787,7 @@ def display_assessment_workflow(student_id, student_name):
             if isinstance(shadow_data_result, dict) and "error" in shadow_data_result:
                 st.error(f"Failed to fetch classroom data: {shadow_data_result['error']}")
             elif isinstance(shadow_data_result, list):
-                st.session_state[classroom_data_key] = shadow_data_result
+                st.session_state[classroom_data_key] = shadow_data_result # Correctly use classroom_data_key
                 if shadow_data_result:
                     print(f"DEBUG: Fetched {len(shadow_data_result)} classroom data entries for {student_name}")
                 else:
