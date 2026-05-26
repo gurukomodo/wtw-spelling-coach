@@ -1890,3 +1890,17 @@ def delete_specific_correction(correction_id):
         return False
     finally:
         conn.close()
+
+def delete_assessment(assessment_id):
+    """Deletes a specific diagnostic assessment record by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM assessments WHERE id = ?", (assessment_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting assessment: {e}")
+        return False
+    finally:
+        conn.close()
