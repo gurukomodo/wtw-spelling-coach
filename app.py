@@ -1537,6 +1537,8 @@ def display_admin_page():
                 with col4:
                     st.text(f"Notes: {context_notes or 'N/A'}")
                 with col5:
+                    # Assuming `row_id` is the 'id' of the correction and `student_id` is part of the `correction` tuple (added in DB change)
+                    # The existing delete_specific_correction only takes ID, which is fine for deletion
                     if st.button("Forget This", key=f"forget_{row_id}", type="secondary"):
                         if delete_specific_correction(row_id):
                             st.success(f"Forgotten correction for '{word_tested}'")
