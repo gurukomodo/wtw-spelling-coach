@@ -647,19 +647,17 @@ def display_student_detail_view(student_id, current_teacher_email):
         for assessment in reversed(history):
             # Attempt to get the list name from teacher_refinement first
             test_name = "Ad-hoc Assessment" # Default fallback
-            if assessment.get('teacher_refinement'):
-                refinement_notes = assessment['teacher_refinement']
+            if assessment.get('teacher_refined_notes'): # Use correct key
+                refinement_notes = assessment['teacher_refined_notes'] # Use correct key
                 # Check for the prepended "Word List:"
                 if refinement_notes.startswith("Word List:"):
                     first_line = refinement_notes.split('\n')[0]
                     test_name = first_line.replace("Word List: ", "").strip()
-                elif assessment.get('test_template_id'): # Fallback to test_template_id if present
-                    template_data = get_test_template(assessment['test_template_id'])
+                elif assessment.get('test_template'): # Fallback to test_template_id if present (column is 'test_template')
+                    template_data = get_test_template(assessment['test_template'])
                     if template_data:
                         test_name = template_data.get('test_name', 'Unnamed Test')
-                elif assessment.get('intended_words'): # Fallback to intended words if no specific name
-                    words = assessment['intended_words'].split(',')
-                    test_name = f"{len(words)} words"
+                # Removed 'intended_words' fallback as it's not fetched and is embedded in teacher_refined_notes
 
             created_at = assessment.get('created_at', 'N/A')
             date_only = created_at.split(' ')[0] if created_at and ' ' in created_at else created_at
@@ -669,34 +667,31 @@ def display_student_detail_view(student_id, current_teacher_email):
 
             with st.expander(expander_title, expanded=False):
                 st.subheader("Student Responses")
-                if assessment.get('raw_text'):
-                    st.code(assessment['raw_text'], language='text')
+                if assessment.get('raw_transcription'): # Use correct key
+                    st.code(assessment['raw_transcription'], language='text') # Use correct key
                 else:
                     st.info("No student responses recorded for this assessment.")
 
                 st.subheader("Teacher Notes")
-                if assessment.get('teacher_refinement'):
+                if assessment.get('teacher_refined_notes'): # Use correct key
                     # Display the full notes, including the prepended list name
-                    st.markdown(assessment['teacher_refinement'])
+                    st.markdown(assessment['teacher_refined_notes']) # Use correct key
                 else:
                     st.info("No teacher notes recorded for this assessment.")
                 
-                # Optionally display intended words if not already embedded in teacher_refinement
-                if assessment.get('intended_words') and "Intended Test Words:" not in assessment.get('teacher_refinement', ''):
-                    st.subheader("Intended Words")
-                    st.write(assessment['intended_words'])
+                # Removed redundant check for 'intended_words' as it's part of teacher_refined_notes
 
                 # Optional: Display G-level scores if available
                 g_score_keys = [
-                    'g0_phonemic_awareness', 'g1_cvc_mapping', 'g2_digraphs', 'g3_silent_e',
+                    'g0_phonemic', 'g1_cvc', 'g2_digraphs', 'g3_silent_e', # Update keys to match DB columns
                     'g4_vowel_teams', 'g5_r_controlled', 'g6_clusters', 'g7_multisyllabic',
-                    'g8_reduction_morphology'
+                    'g8_reduction' # Update keys to match DB columns
                 ]
                 g_scores_found = {k: assessment.get(k) for k in g_score_keys if assessment.get(k) is not None}
                 if g_scores_found:
                     st.subheader("G-Level Scores")
                     for k, v in g_scores_found.items():
-                        # Format key for display: e.g., 'g0' -> 'G0'
+                        # Format key for display: e.g., 'g0_phonemic' -> 'G0'
                         display_key = k.split('_')[0].upper()
                         st.write(f"- {display_key}: {v}")
 
