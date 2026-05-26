@@ -643,35 +643,65 @@ def display_student_detail_view(student_id, current_teacher_email):
     
     # Reuse the 'history' fetched at the top of display_student_detail_view
     if history:
-        history_data = []
-        for assessment in history:
-            # Attempt to get the list name from the test_template_id if available
-            test_name = "N/A"
-            if assessment.get('test_template_id'):
-                template_data = get_test_template(assessment['test_template_id'])
-                if template_data:
-                    test_name = template_data.get('test_name', 'Unnamed Test')
-            elif assessment.get('intended_words'):
-                # Fallback to intended words if no template ID (e.g., ad-hoc assessments)
-                words = assessment['intended_words'].split(',')
-                test_name = f"{len(words)} words"
-            else:
-                test_name = "Ad-hoc Assessment"
+        # Display assessments in reverse chronological order (most recent first)
+        for assessment in reversed(history):
+            # Attempt to get the list name from teacher_refinement first
+            test_name = "Ad-hoc Assessment" # Default fallback
+            if assessment.get('teacher_refinement'):
+                refinement_notes = assessment['teacher_refinement']
+                # Check for the prepended "Word List:"
+                if refinement_notes.startswith("Word List:"):
+                    first_line = refinement_notes.split('\n')[0]
+                    test_name = first_line.replace("Word List: ", "").strip()
+                elif assessment.get('test_template_id'): # Fallback to test_template_id if present
+                    template_data = get_test_template(assessment['test_template_id'])
+                    if template_data:
+                        test_name = template_data.get('test_name', 'Unnamed Test')
+                elif assessment.get('intended_words'): # Fallback to intended words if no specific name
+                    words = assessment['intended_words'].split(',')
+                    test_name = f"{len(words)} words"
 
-            g_level_score = assessment.get('g_level_score', 'N/A')
-            # Extract date part only
             created_at = assessment.get('created_at', 'N/A')
             date_only = created_at.split(' ')[0] if created_at and ' ' in created_at else created_at
+            suggested_group = assessment.get('suggested_next', 'N/A').upper()
             
-            history_data.append({
-                "Assessment Name": test_name,
-                "Date": date_only,
-                "Suggested Group": assessment.get('suggested_next', 'N/A').upper(),
-            })
-        
-        # Display in a dataframe, reversed to show most recent first
-        df_history = pd.DataFrame(history_data[::-1]) 
-        st.dataframe(df_history, use_container_width=True, hide_index=True)
+            expander_title = f"**{test_name}** – {date_only} (Suggested: {suggested_group})"
+
+            with st.expander(expander_title, expanded=False):
+                st.subheader("Student Responses")
+                if assessment.get('raw_text'):
+                    st.code(assessment['raw_text'], language='text')
+                else:
+                    st.info("No student responses recorded for this assessment.")
+
+                st.subheader("Teacher Notes")
+                if assessment.get('teacher_refinement'):
+                    # Display the full notes, including the prepended list name
+                    st.markdown(assessment['teacher_refinement'])
+                else:
+                    st.info("No teacher notes recorded for this assessment.")
+                
+                # Optionally display intended words if not already embedded in teacher_refinement
+                if assessment.get('intended_words') and "Intended Test Words:" not in assessment.get('teacher_refinement', ''):
+                    st.subheader("Intended Words")
+                    st.write(assessment['intended_words'])
+
+                # Optional: Display G-level scores if available
+                g_score_keys = [
+                    'g0_phonemic_awareness', 'g1_cvc_mapping', 'g2_digraphs', 'g3_silent_e',
+                    'g4_vowel_teams', 'g5_r_controlled', 'g6_clusters', 'g7_multisyllabic',
+                    'g8_reduction_morphology'
+                ]
+                g_scores_found = {k: assessment.get(k) for k in g_score_keys if assessment.get(k) is not None}
+                if g_scores_found:
+                    st.subheader("G-Level Scores")
+                    for k, v in g_scores_found.items():
+                        # Format key for display: e.g., 'g0' -> 'G0'
+                        display_key = k.split('_')[0].upper()
+                        st.write(f"- {display_key}: {v}")
+
+            st.markdown("---") # Separator for each expander
+
     else:
         st.info("No diagnostic assessments recorded yet for this student.")
 
@@ -991,15 +1021,30 @@ def display_assessment_workflow(student_id, student_name):
                         save_obj = SaveObject()
                         save_obj.student_id = student_id
                         save_obj.real_name = student_name
-                        # Use teacher's refined notes with appended target words for temporary storage
+                        
+                        # --- Logic to capture and prepend word list name ---
+                        list_name_for_saving = ""
+                        if st.session_state.get('current_list_id'):
+                            list_data = get_named_list_by_id(st.session_state.current_list_id)
+                            if list_data:
+                                list_name_for_saving = list_data['list_name']
+                        elif st.session_state.get(f"new_list_name_{student_id}"):
+                            list_name_for_saving = st.session_state[f"new_list_name_{student_id}"].strip()
+
+                        # Construct final_notes_with_target
                         intended_words_for_saving = st.session_state.get("processed_intended_words")
+                        
+                        base_final_notes = final_notes if final_notes and final_notes.strip() not in ["No analysis available yet.", "AI analysis failed.", "Type your own diagnostic notes here..."] else ""
+                        
+                        final_notes_with_target = base_final_notes
                         if intended_words_for_saving:
-                            if final_notes and final_notes.strip() not in ["No analysis available yet.", "AI analysis failed.", "Type your own diagnostic notes here..."]:
-                                final_notes_with_target = f"{final_notes}\n\nIntended Test Words: {intended_words_for_saving}"
+                            if final_notes_with_target:
+                                final_notes_with_target += f"\n\nIntended Test Words: {intended_words_for_saving}"
                             else:
                                 final_notes_with_target = f"Intended Test Words: {intended_words_for_saving}"
-                        else:
-                            final_notes_with_target = final_notes
+
+                        if list_name_for_saving:
+                            final_notes_with_target = f"Word List: {list_name_for_saving}\n\n{final_notes_with_target}".strip()
 
                         save_obj.teacher_notes = final_notes_with_target # Use teacher's refined notes with appended target words
             
@@ -1020,15 +1065,16 @@ def display_assessment_workflow(student_id, student_name):
                         teacher_observations = st.session_state.get("teacher_observations_input", "")
             
                         # Get test template info (need to ensure it's selected in the UI)
+                        # NOTE: The UI now primarily uses "Named Lists". This logic should be reviewed if "Test Templates" are re-introduced.
                         templates = get_all_test_templates()
                         template_options = {t['test_name']: t for t in templates}
-                        selected_template_name = st.session_state.get("test_template_selector")
+                        selected_template_name = st.session_state.get("test_template_selector") # This selector is not currently used in this flow.
                         selected_template = template_options.get(selected_template_name)
                         test_template_id = selected_template.get('id') if selected_template else None
 
                         save_assessment(save_obj, st.session_state.edited_transcription, teacher_refinement=final_notes_with_target, # Pass the modified notes
                                     struggling_words=struggling_words, teacher_id=current_teacher_email,
-                                    teacher_observations=teacher_observations, test_template=test_template_id)
+                                    teacher_observations=teacher_observations, test_template=test_template_id) # test_template_id will often be None with current UI
                         
                         print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.edited_transcription[:15]}...")
                         
