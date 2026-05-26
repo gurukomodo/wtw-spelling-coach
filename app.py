@@ -33,6 +33,8 @@ import constants
 # Initialize correction tables on boot
 init_correction_tables()
 
+from database_manager import delete_assessment # Import the new delete function
+
 # =============================================================================
 # PAGE CONFIG
 # =============================================================================
@@ -694,6 +696,18 @@ def display_student_detail_view(student_id, current_teacher_email):
                         # Format key for display: e.g., 'g0_phonemic' -> 'G0'
                         display_key = k.split('_')[0].upper()
                         st.write(f"- {display_key}: {v}")
+                
+                # Delete Assessment Button with confirmation
+                col_del_btn, _ = st.columns([1, 4])
+                with col_del_btn:
+                    with st.popover("Delete this assessment?", use_container_width=True):
+                        st.write("Are you sure you want to delete this assessment? This action cannot be undone.")
+                        if st.button("Confirm Delete", type="primary", key=f"confirm_delete_assessment_{assessment['id']}"):
+                            if delete_assessment(assessment['id']):
+                                st.success("Assessment deleted successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to delete assessment.")
 
             st.markdown("---") # Separator for each expander
 
