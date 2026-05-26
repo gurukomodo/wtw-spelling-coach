@@ -1839,17 +1839,28 @@ def log_teacher_correction(word_tested, ai_val, teacher_val, error_type="", note
     conn.commit()
     conn.close()
 
-def get_historical_corrections(limit=10):
-    """Pulls recent corrections to inject into the CrewAI prompt instructions."""
+def get_historical_corrections(student_id=None, limit=10):
+    """
+    Pulls recent corrections to inject into the CrewAI prompt instructions.
+    Can filter by student_id or provide a general list.
+    """
     conn = sqlite3.connect('spelling_coach.db')
     cursor = conn.cursor()
     
-    cursor.execute('''
+    query = '''
         SELECT id, word_tested, ai_transcription, teacher_transcription, context_notes 
         FROM assessment_corrections 
-        ORDER BY timestamp DESC 
-        LIMIT ?
-    ''', (limit,))
+    '''
+    params = []
+
+    if student_id:
+        query += ' WHERE student_id = ?'
+        params.append(student_id)
+
+    query += ' ORDER BY timestamp DESC LIMIT ?'
+    params.append(limit)
+
+    cursor.execute(query, params)
     
     rows = cursor.fetchall()
     conn.close()
