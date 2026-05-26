@@ -26,7 +26,7 @@ from database_manager import (
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
     save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data,
     save_named_list, get_named_lists, get_named_list_by_id, init_correction_tables,
-    get_historical_corrections, delete_specific_correction
+    get_historical_corrections, delete_specific_correction, get_student_current_group_focus
 )
 import constants
 
@@ -561,16 +561,18 @@ def display_student_detail_view(student_id, current_teacher_email):
     group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
     default_group_index = group_keys.index(current_student_group_focus) if current_student_group_focus in group_keys else 0
 
+    st.subheader("Current Group Focus")
+    
     st.selectbox(
-        "Current Group Focus:",
+        label="Select Focus Group", # Standard clean label since the subheader sits above it now
+        label_visibility="collapsed", # Hides the small duplicate label so the subheader does the talking
         options=group_keys,
         index=default_group_index,
         format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
         key=f"group_focus_selector_{student_id}",
         on_change=on_group_focus_change
-    )
+    )   
 
-    st.markdown("---") # Separator after group selector
 
     # Fetch latest assessment data from database
     from database_manager import get_student_history
@@ -613,8 +615,8 @@ def display_student_detail_view(student_id, current_teacher_email):
             except Exception as e:
                 st.error(f"Failed to fetch classroom data: {e}. Please check the Google Sheet URL and permissions.")
     
-    st.divider()
-
+    st.markdown("---")
+    
     # Section for AI-Generated Practice Lists
     st.subheader("AI-Generated Practice Lists")
     if st.button("✨ Generate Personalized Practice Lists", key=f"gen_practice_{student_id}"):
@@ -731,12 +733,10 @@ def display_student_detail_view(student_id, current_teacher_email):
                             else:
                                 st.error("Failed to delete assessment.")
 
-            st.markdown("---") # Separator for each expander
-
     else:
         st.info("No diagnostic assessments recorded yet for this student.")
 
-    st.divider()
+    st.markdown("---")
 
     # Display classroom data if available for this student (moved to be before Add New Assessment)
     # Ensure the key is consistently defined as f"shadow_data_{student_id}"

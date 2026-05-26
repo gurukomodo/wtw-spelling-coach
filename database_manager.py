@@ -1831,7 +1831,7 @@ def update_student_current_group_focus(student_id, new_group):
 # ============================================================
 def init_correction_tables():
     """Initializes the table that stores AI vs Teacher discrepancies."""
-    conn = sqlite3.connect('spelling_coach.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -1861,7 +1861,7 @@ def init_correction_tables():
 
 def log_teacher_correction(student_id, word_tested, ai_val, teacher_val, error_type="", notes=""):
     """Saves a single correction instance to serve as long-term AI memory."""
-    conn = sqlite3.connect('spelling_coach.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -1877,7 +1877,7 @@ def get_historical_corrections(student_id=None, limit=10):
     Pulls recent corrections to inject into the CrewAI prompt instructions.
     Can filter by student_id or provide a general list.
     """
-    conn = sqlite3.connect('spelling_coach.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     query = '''
@@ -1901,7 +1901,7 @@ def get_historical_corrections(student_id=None, limit=10):
 
 def delete_specific_correction(correction_id):
     """Deletes a specific teacher correction record by ID."""
-    conn = sqlite3.connect('spelling_coach.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM assessment_corrections WHERE id = ?", (correction_id,))

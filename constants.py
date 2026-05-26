@@ -9,7 +9,7 @@ DIAGNOSTIC_GROUPS = {
         "description": "Minimal pairs, rhyme, syllable segmentation, and initial sound isolation."
     },
     "g1": {
-        "name": "Basic CVC Mapping",
+        "name": "Short Vowels & CVC Patterns",
         "database_field": "g1_cvc",
         "description": "Short vowel matching, initial/final consonant blending in single-syllable words."
     },
