@@ -459,7 +459,7 @@ def show_teacher_dashboard():
                     'pending_pseudonym', 'selected_student', # Clear any pending/previous student context
                     'g0_score', 'g1_score', 'g2_score', 'g3_score', 'g4_score', 'g5_score', 'g6_score', 'g7_score', 'g8_score', # G-level scores
                     f'progress_review_{st.session_state.get("current_student_id")}', # Clear previous student's progress review
-                    f'classroom_data_{st.session_state.get("current_student_id")}', # Clear previous student's classroom data
+                    f'shadow_data_{st.session_state.get("current_student_id")}', # Clear previous student's classroom data
                     'selected_test_template', # Clear selected test template
                 ]:
                     if key in st.session_state:
@@ -543,7 +543,7 @@ def display_class_page():
 def display_student_detail_view(student_id, current_teacher_email):
     """Display simplified detail view for a selected student."""
     # Get student name with proper fallback
-    student_name = get_student_name(current_teacher_email, student_id) or f"Student {student_id}"
+    student_name = get_name_for_id(current_teacher_email, student_id) or f"Student {student_id}" # Use get_name_for_id for consistency
     
     # Display student name as large header
     st.title(student_name)
@@ -563,6 +563,31 @@ def display_student_detail_view(student_id, current_teacher_email):
             struggles = latest.get('struggling_words', '').split(',') if latest.get('struggling_words') else []
         if latest.get('suggested_next'):
             target_group = latest.get('suggested_next', 'g1')
+
+    # Use student-specific key for classroom data
+    classroom_data_key = f"shadow_data_{student_id}"
+
+    # Fetch teacher settings to get the Google Sheet URL
+    current_settings = get_teacher_settings(current_teacher_email)
+    sheet_url = current_settings.get('google_sheet_url', '')
+
+    # Fetch classroom data if URL is configured and data is not already in session state
+    if sheet_url and not st.session_state.get(classroom_data_key):
+        with st.spinner("Fetching classroom observation data..."): # Add a spinner for UX
+            try:
+                shadow_data_result = get_sheet_data(sheet_url, student_name, None)
+                if isinstance(shadow_data_result, dict) and "error" in shadow_data_result:
+                    st.error(f"Failed to fetch classroom data: {shadow_data_result['error']}")
+                elif isinstance(shadow_data_result, list):
+                    st.session_state[classroom_data_key] = shadow_data_result
+                    if shadow_data_result:
+                        print(f"DEBUG: Fetched {len(shadow_data_result)} classroom data entries for {student_name}")
+                    else:
+                        st.info(f"No recent classroom observations found for '{student_name}' in Google Sheet.")
+                else:
+                    st.error(f"Unexpected response from classroom data fetch: {shadow_data_result}")
+            except Exception as e:
+                st.error(f"Failed to fetch classroom data: {e}. Please check the Google Sheet URL and permissions.")
     
     st.divider()
 
@@ -610,9 +635,6 @@ def display_student_detail_view(student_id, current_teacher_email):
         if st.button("Clear Practice List", key=f"clear_practice_{student_id}"):
             del st.session_state[practice_list_key]
             st.rerun()
-
-    # Use student-specific key for classroom data
-    classroom_data_key = f"shadow_data_{student_id}"
 
     st.divider()
 
