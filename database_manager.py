@@ -135,6 +135,11 @@ def repair_schema(cursor):
         cursor.execute("ALTER TABLE student_identity ADD COLUMN pseudonym TEXT")
         print("Schema Repair: Added pseudonym column.")
     
+    # Add current_group_focus column to student_identity if missing
+    if "current_group_focus" not in identity_cols:
+        cursor.execute("ALTER TABLE student_identity ADD COLUMN current_group_focus TEXT DEFAULT 'g1'")
+        print("Schema Repair: Added current_group_focus column to student_identity.")
+    
     # Add teacher_name and google_sheet_url columns to teacher_settings if missing
     cursor.execute("PRAGMA table_info(teacher_settings)")
     settings_cols = [col[1] for col in cursor.fetchall()]
@@ -906,7 +911,7 @@ def get_all_students_by_teacher(teacher_email):
             si.pseudonym,
             COALESCE(latest.total_attempts, 0) as total_attempts,
             latest.last_date,
-            latest.current_g_level,
+            si.current_group_focus, -- Use the new column for current group focus
             latest.most_struggled_word
         FROM student_identity si
         LEFT JOIN (
@@ -914,12 +919,6 @@ def get_all_students_by_teacher(teacher_email):
                 a.student_id,
                 COUNT(*) as total_attempts,
                 MAX(a.created_at) as last_date,
-                (
-                    SELECT a2.suggested_next 
-                    FROM assessments a2 
-                    WHERE a2.student_id = a.student_id 
-                    ORDER BY a2.created_at DESC LIMIT 1
-                ) as current_g_level,
                 (
                     SELECT a3.struggling_words 
                     FROM assessments a3 
@@ -942,7 +941,7 @@ def get_all_students_by_teacher(teacher_email):
         "pseudonym": s[2] or f"Student_{i+1:02d}",
         "total_attempts": s[3] or 0,
         "last_date": s[4],
-        "current_g_level": s[5],  # G-Level from most recent assessment
+        "current_g_level": s[5],  # Use current_group_focus from student_identity
         "most_struggled_word": s[6]
     } for i, s in enumerate(students)]
 
@@ -1784,22 +1783,45 @@ def add_student(teacher_id, real_name, target_group="g1"):
         
         # 3. Insert into student_identity
         cursor.execute('''
-            INSERT INTO student_identity (teacher_id, student_id, real_name, pseudonym)
-            VALUES (?, ?, ?, ?)
-        ''', (teacher_id, student_id, real_name, pseudonym))
+            INSERT INTO student_identity (teacher_id, student_id, real_name, pseudonym, current_group_focus)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (teacher_id, student_id, real_name, pseudonym, target_group))
         
         # 4. Create an initial 'anchor' assessment so they show up in G-Level lists
         # This sets their starting group (e.g., g1 or g2)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute('''
-            INSERT INTO assessments (student_id, teacher_id, test_date, created_at, suggested_next)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, target_group))
+            INSERT INTO assessments (student_id, teacher_id, test_date, created_at, suggested_next, teacher_notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, target_group, "Initial student record created."))
         
         conn.commit()
         return True
     except Exception as e:
         print(f"Error adding student: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_student_current_group_focus(student_id):
+    """Retrieves the current teacher-assigned group focus for a student."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT current_group_focus FROM student_identity WHERE student_id = ?', (student_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 'g1' # Default to g1 if not found
+
+def update_student_current_group_focus(student_id, new_group):
+    """Updates the teacher-assigned group focus for a student."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('UPDATE student_identity SET current_group_focus = ? WHERE student_id = ?', (new_group, student_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating student group focus: {e}")
         return False
     finally:
         conn.close()

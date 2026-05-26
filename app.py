@@ -550,21 +550,43 @@ def display_student_detail_view(student_id, current_teacher_email):
     # Display student name as large header
     st.title(student_name)
     
+    # Fetch current group focus from student_identity
+    current_student_group_focus = get_student_current_group_focus(student_id)
+    
+    # Group Focus Selector at the top
+    def on_group_focus_change():
+        update_student_current_group_focus(student_id, st.session_state[f"group_focus_selector_{student_id}"])
+        st.rerun()
+
+    group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
+    default_group_index = group_keys.index(current_student_group_focus) if current_student_group_focus in group_keys else 0
+
+    st.selectbox(
+        "Current Group Focus:",
+        options=group_keys,
+        index=default_group_index,
+        format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
+        key=f"group_focus_selector_{student_id}",
+        on_change=on_group_focus_change
+    )
+
+    st.markdown("---") # Separator after group selector
+
     # Fetch latest assessment data from database
     from database_manager import get_student_history
     history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
     
-    # Get the most recent assessment for word analysis
+    # For practice list generation, always use the dynamically selected current_student_group_focus
+    target_group = current_student_group_focus
+    
+    # Get the most recent assessment data for struggles/mastered (if needed for display/context)
     struggles = []
     mastered = []
-    target_group = 'g1'
-    
     if history:
         latest = history[-1]  # Most recent assessment
         if latest.get('struggling_words'):
             struggles = latest.get('struggling_words', '').split(',') if latest.get('struggling_words') else []
-        if latest.get('suggested_next'):
-            target_group = latest.get('suggested_next', 'g1')
+        # 'mastered' is not directly saved in history, so we'll rely on generating from raw_text or external state if needed.
 
     # Use student-specific key for classroom data
     classroom_data_key = f"shadow_data_{student_id}"
