@@ -1038,134 +1038,134 @@ def display_assessment_workflow(student_id, student_name):
         key=f"logic_feedback_{student_id}"
     )
 
-            if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
-                if not student_id:
-                    st.error("Cannot save assessment: Student ID is missing.")
-                    return
-                if not st.session_state.get('student_attempts_for_report'):
-                    st.error("Cannot save assessment: No student spelling attempts recorded (Step 3).")
-                    return
+    if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
+        if not student_id:
+            st.error("Cannot save assessment: Student ID is missing.")
+            return
+        if not st.session_state.get('student_attempts_for_report'):
+            st.error("Cannot save assessment: No student spelling attempts recorded (Step 3).")
+            return
 
-                # Retrieve values needed for saving and discrepancy logging
-                teacher_final_notes = st.session_state.get('final_diagnostic_notes', '').strip()
-                teacher_assigned_group = st.session_state.get('teacher_refined_group', 'g1')
-                teacher_feedback_on_ai = st.session_state.get(f"logic_feedback_{student_id}", '').strip()
-                
-                # AI's original analysis results
-                ai_original_analysis_object = st.session_state.get('analysis_result')
-                ai_original_notes = getattr(ai_original_analysis_object, 'teacher_notes', '').strip()
-                ai_suggested_groups_list = getattr(ai_original_analysis_object, 'suggested_next_groups', [])
-                ai_suggested_group = ai_suggested_groups_list[0] if ai_suggested_groups_list else 'g1'
+        # Retrieve values needed for saving and discrepancy logging
+        teacher_final_notes = st.session_state.get('final_diagnostic_notes', '').strip()
+        teacher_assigned_group = st.session_state.get('teacher_refined_group', 'g1')
+        teacher_feedback_on_ai = st.session_state.get(f"logic_feedback_{student_id}", '').strip()
+        
+        # AI's original analysis results
+        ai_original_analysis_object = st.session_state.get('analysis_result')
+        ai_original_notes = getattr(ai_original_analysis_object, 'teacher_notes', '').strip()
+        ai_suggested_groups_list = getattr(ai_original_analysis_object, 'suggested_next_groups', [])
+        ai_suggested_group = ai_suggested_groups_list[0] if ai_suggested_groups_list else 'g1'
 
 
-                try:
-                    # Construct save_obj and other parameters as expected by database_manager.save_assessment
-                    # Assuming a structure similar to what was previously used in a working save block
-                    class AssessmentSaveObject:
-                        pass
-                    save_obj = AssessmentSaveObject()
-                    save_obj.student_id = student_id
-                    save_obj.real_name = student_name # Assuming student_name is available
-                    save_obj.teacher_id = current_teacher_email
-                    save_obj.raw_transcription = st.session_state.get('edited_transcription', '') # Use edited_transcription
-                    save_obj.teacher_notes = teacher_final_notes
-                    save_obj.suggested_next_groups = teacher_assigned_group # Save teacher's final assigned group here
+        try:
+            # Construct save_obj and other parameters as expected by database_manager.save_assessment
+            # Assuming a structure similar to what was previously used in a working save block
+            class AssessmentSaveObject:
+                pass
+            save_obj = AssessmentSaveObject()
+            save_obj.student_id = student_id
+            save_obj.real_name = student_name # Assuming student_name is available
+            save_obj.teacher_id = current_teacher_email
+            save_obj.raw_transcription = st.session_state.get('edited_transcription', '') # Use edited_transcription
+            save_obj.teacher_notes = teacher_final_notes
+            save_obj.suggested_next_groups = teacher_assigned_group # Save teacher's final assigned group here
 
-                    # Populate G-scores from display, with fallback to 0
-                    g_scores_to_save = st.session_state.get('g_scores_display', {})
-                    save_obj.g0_phonemic_awareness = g_scores_to_save.get("g0", 0)
-                    save_obj.g1_cvc_mapping = g_scores_to_save.get("g1", 0)
-                    save_obj.g2_digraphs = g_scores_to_save.get("g2", 0)
-                    save_obj.g3_silent_e = g_scores_to_save.get("g3", 0)
-                    save_obj.g4_vowel_teams = g_scores_to_save.get("g4", 0)
-                    save_obj.g5_r_controlled = g_scores_to_save.get("g5", 0)
-                    save_obj.g6_clusters = g_scores_to_save.get("g6", 0)
-                    save_obj.g7_multisyllabic = g_scores_to_save.get("g7", 0)
-                    save_obj.g8_reduction_morphology = g_scores_to_save.get("g8", 0)
+            # Populate G-scores from display, with fallback to 0
+            g_scores_to_save = st.session_state.get('g_scores_display', {})
+            save_obj.g0_phonemic_awareness = g_scores_to_save.get("g0", 0)
+            save_obj.g1_cvc_mapping = g_scores_to_save.get("g1", 0)
+            save_obj.g2_digraphs = g_scores_to_save.get("g2", 0)
+            save_obj.g3_silent_e = g_scores_to_save.get("g3", 0)
+            save_obj.g4_vowel_teams = g_scores_to_save.get("g4", 0)
+            save_obj.g5_r_controlled = g_scores_to_save.get("g5", 0)
+            save_obj.g6_clusters = g_scores_to_save.get("g6", 0)
+            save_obj.g7_multisyllabic = g_scores_to_save.get("g7", 0)
+            save_obj.g8_reduction_morphology = g_scores_to_save.get("g8", 0)
 
-                    struggling_words = st.session_state.get("struggling_words_input", "") # Still used?
-                    teacher_observations = st.session_state.get("teacher_observations_input", "") # Still used?
-                    test_template_id = st.session_state.get('current_list_id') # Use the ID of the selected named list
+            struggling_words = st.session_state.get("struggling_words_input", "") # Still used?
+            teacher_observations = st.session_state.get("teacher_observations_input", "") # Still used?
+            test_template_id = st.session_state.get('current_list_id') # Use the ID of the selected named list
 
-                    # Call save_assessment - ASSUMING IT RETURNS THE ASSESSMENT_ID
-                    assessment_id = save_assessment(save_obj, st.session_state.get('student_attempts_for_report', ''), 
-                                                    teacher_refinement=teacher_final_notes, # Pass the final notes
-                                                    struggling_words=struggling_words, teacher_id=current_teacher_email,
-                                                    teacher_observations=teacher_observations, test_template=test_template_id)
-                    
-                    if assessment_id:
-                        print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.get('student_attempts_for_report', '')[:15]}...")
-                        st.success(f"Assessment for {student_name} has been saved!")
-
-                        # Update the global student focus tracking table after successful assessment save
-                        update_student_current_group_focus(student_id, teacher_assigned_group)
-                        
-                        # --- Discrepancy Logging Logic ---
-                        # Check for discrepancies: notes differ, groups mismatch, or direct feedback provided
-                        discrepancy_found = False
-                        if teacher_final_notes != ai_original_notes:
-                            discrepancy_found = True
-                            print(f"DEBUG: Discrepancy found in teacher notes. Teacher: '{teacher_final_notes[:30]}...' AI: '{ai_original_notes[:30]}...'")
-                        if teacher_assigned_group != ai_suggested_group:
-                            discrepancy_found = True
-                            print(f"DEBUG: Discrepancy found in suggested group. Teacher: {teacher_assigned_group} AI: {ai_suggested_group}")
-                        if teacher_feedback_on_ai:
-                            discrepancy_found = True
-                            print(f"DEBUG: Direct teacher feedback provided: {teacher_feedback_on_ai[:30]}...")
-
-                        if discrepancy_found:
-                            with st.spinner("Analyzing AI's perceptual error..."):
-                                # Prepare data for AI discrepancy analysis
-                                ai_analysis_context = f"AI's original analysis: {ai_original_notes}"
-                                teacher_correction_context = f"Teacher's final notes: {teacher_final_notes}"
-                                teacher_group_context = f"Teacher assigned group: {teacher_assigned_group}, AI suggested group: {ai_suggested_group}"
-                                
-                                ai_perceptual_error_feedback = get_ai_discrepancy_feedback(
-                                    ai_analysis_context=ai_analysis_context,
-                                    teacher_correction_context=teacher_correction_context,
-                                    teacher_group_context=teacher_group_context,
-                                    teacher_direct_feedback=teacher_feedback_on_ai
-                                )
-                                print(f"DEBUG: AI Perceptual Error Feedback: {ai_perceptual_error_feedback[:100]}...")
-
-                                log_ai_discrepancy(
-                                    student_id=student_id,
-                                    assessment_id=assessment_id,
-                                    ai_suggested_group=ai_suggested_group,
-                                    teacher_assigned_group=teacher_assigned_group,
-                                    teacher_direct_feedback=f"[{ai_perceptual_error_feedback}] {teacher_feedback_on_ai}".strip()
-                                )
-                                st.info("Discrepancy logged for AI improvement.")
-                        # --- End Discrepancy Logging Logic ---
-                        
-                        # Store the ID of the used list for "smart memory"
-                        if st.session_state.get('current_list_id'):
-                            st.session_state.last_used_assessment_list_id = st.session_state.current_list_id
-                        else:
-                            st.session_state.last_used_assessment_list_id = None
-
-                        # Clear assessment-specific state after saving
-                        for key in [
-                            'uploaded_file', 'raw_transcription', f'edited_transcription_{student_id}', 'analysis_result', # Use student_id specific key
-                            'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
-                            'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
-                            'intended_words_input', 'processed_intended_words', 'current_list_id',
-                            f"new_list_name_{student_id}", 'teacher_refined_group', # Clear new list name input and refined group
-                            f"teacher_direct_feedback_{student_id}", f"logic_feedback_{student_id}" # Clear direct feedback inputs
-                        ]:
-                            if key in st.session_state:
-                                del st.session_state[key]
-                        
-                        for i in range(9): # Clear individual g-score states
-                            if f'g{i}_score' in st.session_state:
-                                del st.session_state[f'g{i}_score']
-
-                        st.rerun()
-                    else:
-                        st.error("Failed to save assessment: No assessment ID returned.")
-                except Exception as e:
-                    st.error(f"Error saving assessment: {e}")
+            # Call save_assessment - ASSUMING IT RETURNS THE ASSESSMENT_ID
+            assessment_id = save_assessment(save_obj, st.session_state.get('student_attempts_for_report', ''), 
+                                            teacher_refinement=teacher_final_notes, # Pass the final notes
+                                            struggling_words=struggling_words, teacher_id=current_teacher_email,
+                                            teacher_observations=teacher_observations, test_template=test_template_id)
             
+            if assessment_id:
+                print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.get('student_attempts_for_report', '')[:15]}...")
+                st.success(f"Assessment for {student_name} has been saved!")
+
+                # Update the global student focus tracking table after successful assessment save
+                update_student_current_group_focus(student_id, teacher_assigned_group)
+                
+                # --- Discrepancy Logging Logic ---
+                # Check for discrepancies: notes differ, groups mismatch, or direct feedback provided
+                discrepancy_found = False
+                if teacher_final_notes != ai_original_notes:
+                    discrepancy_found = True
+                    print(f"DEBUG: Discrepancy found in teacher notes. Teacher: '{teacher_final_notes[:30]}...' AI: '{ai_original_notes[:30]}...'")
+                if teacher_assigned_group != ai_suggested_group:
+                    discrepancy_found = True
+                    print(f"DEBUG: Discrepancy found in suggested group. Teacher: {teacher_assigned_group} AI: {ai_suggested_group}")
+                if teacher_feedback_on_ai:
+                    discrepancy_found = True
+                    print(f"DEBUG: Direct teacher feedback provided: {teacher_feedback_on_ai[:30]}...")
+
+                if discrepancy_found:
+                    with st.spinner("Analyzing AI's perceptual error..."):
+                        # Prepare data for AI discrepancy analysis
+                        ai_analysis_context = f"AI's original analysis: {ai_original_notes}"
+                        teacher_correction_context = f"Teacher's final notes: {teacher_final_notes}"
+                        teacher_group_context = f"Teacher assigned group: {teacher_assigned_group}, AI suggested group: {ai_suggested_group}"
+                        
+                        ai_perceptual_error_feedback = get_ai_discrepancy_feedback(
+                            ai_analysis_context=ai_analysis_context,
+                            teacher_correction_context=teacher_correction_context,
+                            teacher_group_context=teacher_group_context,
+                            teacher_direct_feedback=teacher_feedback_on_ai
+                        )
+                        print(f"DEBUG: AI Perceptual Error Feedback: {ai_perceptual_error_feedback[:100]}...")
+
+                        log_ai_discrepancy(
+                            student_id=student_id,
+                            assessment_id=assessment_id,
+                            ai_suggested_group=ai_suggested_group,
+                            teacher_assigned_group=teacher_assigned_group,
+                            teacher_direct_feedback=f"[{ai_perceptual_error_feedback}] {teacher_feedback_on_ai}".strip()
+                        )
+                        st.info("Discrepancy logged for AI improvement.")
+                # --- End Discrepancy Logging Logic ---
+                
+                # Store the ID of the used list for "smart memory"
+                if st.session_state.get('current_list_id'):
+                    st.session_state.last_used_assessment_list_id = st.session_state.current_list_id
+                else:
+                    st.session_state.last_used_assessment_list_id = None
+
+                # Clear assessment-specific state after saving
+                for key in [
+                    'uploaded_file', 'raw_transcription', f'edited_transcription_{student_id}', 'analysis_result', # Use student_id specific key
+                    'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
+                    'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
+                    'intended_words_input', 'processed_intended_words', 'current_list_id',
+                    f"new_list_name_{student_id}", 'teacher_refined_group', # Clear new list name input and refined group
+                    f"teacher_direct_feedback_{student_id}", f"logic_feedback_{student_id}" # Clear direct feedback inputs
+                ]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                
+                for i in range(9): # Clear individual g-score states
+                    if f'g{i}_score' in st.session_state:
+                        del st.session_state[f'g{i}_score']
+
+                st.rerun()
+            else:
+                st.error("Failed to save assessment: No assessment ID returned.")
+        except Exception as e:
+            st.error(f"Error saving assessment: {e}")
+    
             
     # Remove this block as it's no longer needed in the main assessment workflow
     # teacher_id = st.session_state.get('user_name')  # Use user_name which contains the email
