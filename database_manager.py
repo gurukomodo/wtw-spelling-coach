@@ -1964,3 +1964,21 @@ def delete_assessment(assessment_id):
         return False
     finally:
         conn.close()
+def log_ai_discrepancy(student_id, assessment_id, ai_suggested_group, teacher_assigned_group, teacher_direct_feedback=None):
+    """
+    Logs a discrepancy when a teacher's assigned group differs from the AI's suggestion.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO ai_discrepancies (student_id, assessment_id, ai_suggested_group, teacher_assigned_group, teacher_direct_feedback)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (student_id, assessment_id, ai_suggested_group, teacher_assigned_group, teacher_direct_feedback))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error logging AI discrepancy: {e}")
+        return False
+    finally:
+        conn.close()
