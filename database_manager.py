@@ -93,6 +93,21 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # New table for AI Discrepancies
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ai_discrepancies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id TEXT NOT NULL,
+            assessment_id INTEGER,
+            ai_suggested_group TEXT,
+            teacher_assigned_group TEXT NOT NULL,
+            teacher_direct_feedback TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES student_identity(student_id),
+            FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+        )
+    ''')
     
     # Commit after table creation
     conn.commit()
@@ -181,6 +196,29 @@ def repair_schema(cursor):
             print("Schema Repair: Added default test template.")
     except:
         pass  # Table doesn't exist yet, will be created in init_db
+
+    # Add schema repair for ai_discrepancies table if not already created
+    cursor.execute("PRAGMA table_info(ai_discrepancies)")
+    discrepancy_cols = [col[1] for col in cursor.fetchall()]
+    if not discrepancy_cols: # If table doesn't exist or is empty, ensure it's created (redundant with init_db, but good for robust repair)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_discrepancies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT NOT NULL,
+                assessment_id INTEGER,
+                ai_suggested_group TEXT,
+                teacher_assigned_group TEXT NOT NULL,
+                teacher_direct_feedback TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES student_identity(student_id),
+                FOREIGN KEY (assessment_id) REFERENCES assessments(id)
+            )
+        ''')
+        print("Schema Repair: Ensured ai_discrepancies table exists.")
+    # Check for specific columns if the table already existed but was older version
+    if "teacher_direct_feedback" not in discrepancy_cols:
+        cursor.execute("ALTER TABLE ai_discrepancies ADD COLUMN teacher_direct_feedback TEXT")
+        print("Schema Repair: Added teacher_direct_feedback column to ai_discrepancies.")
 
 # ============================================================
 # PRIVACY: PSEUDONYM SYSTEM
