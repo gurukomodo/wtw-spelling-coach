@@ -877,3 +877,27 @@ def get_fallback_words(target_group):
         "g8": ["walked", "jumping", "cats", "boxes", "unhappy", "quickly", "happier", "largest", "playing", "stopped"]
     }
     return fallback_by_group.get(target_group, fallback_by_group["g1"])
+def get_ai_discrepancy_feedback(original_notes, refined_notes, suggested_group, final_group, teacher_feedback=""):
+    """
+    Prompts Gemini to evaluate its own diagnostic logic mismatch against the teacher's corrections.
+    """
+    prompt = f"""
+    You are an AI phonics specialist reviewing a diagnostic discrepancy.
+    
+    Your initial analysis notes: {original_notes}
+    Your suggested phonetic focus group: {suggested_group}
+    
+    The expert teacher refined the analysis notes to: {refined_notes}
+    The teacher assigned the student to focus group: {final_group}
+    Teacher direct comments: {teacher_feedback}
+    
+    Compare your original analysis with the teacher's final corrections. Identify the underlying perceptual or diagnostic error you made. Did you mistake consonant mapping for total mastery? Did you ignore a missing short vowel? Define the specific diagnostic error in 1 sentence.
+    """
+    try:
+        # Call your existing Gemini generation utility function here
+        # e.g., response = generate_text(prompt) or st.session_state.gemini_model.generate_content(prompt)
+        response = generate_text(prompt) # Adjust to match the exact wrapper name used in spelling_logic.py
+        return response.strip()
+    except Exception as e:
+        print(f"Error synthesizing AI logic feedback: {e}")
+        return "Unknown diagnostic logic divergence."
