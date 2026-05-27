@@ -11,7 +11,7 @@ import database_manager as db
 from datetime import datetime
 
 from utils import preprocess_image
-from spelling_logic import transcribe_handwriting, run_scoring_crew, generate_personalized_practice_words
+from spelling_logic import get_ai_discrepancy_feedback, transcribe_handwriting, run_scoring_crew, generate_personalized_practice_words
 from database_manager import (
     init_db, get_all_latest_results, assign_unowned_students, get_teacher_settings,
     save_teacher_settings, import_from_csv, get_student_history, get_mastered_words_from_raw,
@@ -26,7 +26,7 @@ from database_manager import (
     get_all_test_templates, get_test_template, save_test_template, delete_test_template,
     save_draft_assessment, get_draft_assessments, delete_draft_assessment, get_sheet_data,
     save_named_list, get_named_lists, get_named_list_by_id, init_correction_tables,
-    get_historical_corrections, delete_specific_correction, get_student_current_group_focus
+    get_historical_corrections, delete_specific_correction, get_student_current_group_focus, log_ai_discrepancy, update_student_current_group_focus,
 )
 import constants
 
@@ -192,7 +192,7 @@ def initialize_session_state():
     for key, default in [
         ("raw_transcription", ""), ("analysis_result", None), ("practice_lists", None),
         ("diagnostic_test", None), ("struggling_words", ""), ("students", load_profiles()),
-        ("edited_transcription", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False), ("logged_in", False), ("user_email", None),
+        ("student_attempts_for_report", ""), ("classroom_data", None), ("selected_student", None), ("is_admin", False), ("logged_in", False), ("user_email", None),
         ("authenticated", False), ("role", None), ("intended_words_input", ""), ("processed_intended_words", ""),
         ("current_word_list_mode", "select_existing"), # Default to selecting existing list
         ("last_used_assessment_list_id", None), # For smart memory of last used list
@@ -754,6 +754,15 @@ def display_student_detail_view(student_id, current_teacher_email):
 
 def display_assessment_workflow(student_id, student_name):
     """Display the complete Step 1-5 assessment workflow."""
+    # 1. DYNAMIC SYNCHRONIZATION: Safety bridge to ensure handwriting flow
+    transcription_key = f"edited_transcription_{student_id}"
+    if st.session_state.get(transcription_key):
+        st.session_state['student_attempts_for_report'] = st.session_state[transcription_key]
+    
+    # Safety initialization
+    if 'student_attempts_for_report' not in st.session_state:
+        st.session_state['student_attempts_for_report'] = ""
+
     current_teacher_email = st.session_state.get('user_email')
     current_settings = get_teacher_settings(current_teacher_email)
     sheet_url = current_settings.get('google_sheet_url', '')
@@ -909,14 +918,14 @@ def display_assessment_workflow(student_id, student_name):
         with col_text:
             st.subheader("Step 4: Verify & Edit Transcription")
             
-            if not st.session_state.get("edited_transcription"):
+            if not st.session_state.get(transcription_key):
                 st.info("Waiting for handwriting analysis...")
             
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                value=st.session_state.get(f"edited_transcription_{student_id}", ""),
+                value=st.session_state.get(transcription_key, ""),
                 height=200,
-                key=f"edited_transcription_{student_id}" # Use student_id in key for uniqueness
+                key=transcription_key
             )
 
             # Analysis Complexity Control
@@ -931,18 +940,11 @@ def display_assessment_workflow(student_id, student_name):
             
             # Step 6: Run Analysis
             if st.button("Step 6: Run Analysis", key=f"run_analysis_{student_id}"):
-                if not student_name:
-                    st.warning("Please select a student!")
-                elif not edited_text:
-                    st.warning("Please complete the transcription first!")
-                else:
-                    with st.spinner("Running AI analysis..."):
+                # Capture latest state
+                st.session_state['student_attempts_for_report'] = st.session_state.get(f"edited_transcription_{student_id}", "")
+                
+                with st.spinner('AI Crew is analyzing spelling patterns...'):
                         try:
-                            # Sync Step 3 data to Step 5 report field
-                            st.session_state.edited_transcription = edited_text
-                            st.session_state['student_attempts_for_report'] = st.session_state.edited_transcription
-                            print(f"DEBUG: Syncing {len(st.session_state.edited_transcription)} chars to Step 5 report field.")
-                            
                             # Use intended words from session state, or fall back to default if not provided
                             intended_words_for_analysis = st.session_state.get("processed_intended_words")
                             if not intended_words_for_analysis:
@@ -951,13 +953,12 @@ def display_assessment_workflow(student_id, student_name):
                             
                             shadow_data = st.session_state.get(classroom_data_key, [])
 
-                            print(f"DEBUG: Sending {len(st.session_state.edited_transcription)} chars to AI Crew with intended words: {intended_words_for_analysis[:50]}...")
-                            print(f"DEBUG: Contextual evidence entries: {len(shadow_data) if shadow_data else 0}")
+                            print(f"DEBUG: Sending attempts to AI Crew...")
 
                             analysis_result = run_scoring_crew(
                                 student_id,
-                                st.session_state.edited_transcription,
-                                intended_words=intended_words_for_analysis, # Pass the collected intended words
+                                st.session_state['student_attempts_for_report'],
+                                intended_words=intended_words_for_analysis,
                                 shadow_data=shadow_data,
                                 analysis_complexity=analysis_complexity
                             )
@@ -997,11 +998,11 @@ def display_assessment_workflow(student_id, student_name):
             st.caption("Review the AI's notes above. Verify and record your final diagnostic decision.")
             
             col1, col2 = st.columns(2)
-            
+            # Uniformly read from and write to 'student_attempts_for_report'
             with col1:
                 st.text_area(
                     "Student's Spelling Attempts", 
-                    value=st.session_state.get('student_attempts_for_report', ''),
+                    value=st.session_state.get('student_attempts_for_report', ""),
                     height=400,
                     key="student_attempts_for_report"
                 )
@@ -1030,111 +1031,56 @@ def display_assessment_workflow(student_id, student_name):
                     key="final_diagnostic_notes"
                 )
             
-            # Save Button
-            if st.button("Confirm & Save to Student History", key=f"save_assessment_{student_id}"):
-                if not student_id:
-                    st.error("Please select a student first.")
-                elif not st.session_state.get("edited_transcription"):
-                    st.error("Please complete the transcription first.")
-                elif not st.session_state.get("analysis_result"):
-                    st.error("Please run the AI analysis first.")
-                else:
-                    try:
-                        analysis_result = st.session_state.analysis_result
-                        g_scores_to_save = st.session_state.get("g_scores_display", {})
-                        
-                        # Use teacher refined group focus
-                        refined_group = st.session_state.get("teacher_refined_group", "g1")
-                        targets_to_save = [refined_group]
-                        
-                        class SaveObject:
-                            pass
-                        save_obj = SaveObject()
-                        save_obj.student_id = student_id
-                        save_obj.real_name = student_name
-                        
-                        # --- Logic to capture and prepend word list name ---
-                        list_name_for_saving = ""
-                        if st.session_state.get('current_list_id'):
-                            list_data = get_named_list_by_id(st.session_state.current_list_id)
-                            if list_data:
-                                list_name_for_saving = list_data['list_name']
-                        elif st.session_state.get(f"new_list_name_{student_id}"):
-                            list_name_for_saving = st.session_state[f"new_list_name_{student_id}"].strip()
+            # 1. UI Addition for feedback text area
+    teacher_logic_feedback = st.text_area(
+        "Feedback on AI Logic / Blind Spots", 
+        placeholder="e.g., The AI missed short vowel struggles in CVC words...",
+        key=f"logic_feedback_{student_id}"
+    )
 
-                        # Construct final_notes_with_target
-                        intended_words_for_saving = st.session_state.get("processed_intended_words")
-                        
-                        base_final_notes = final_notes if final_notes and final_notes.strip() not in ["No analysis available yet.", "AI analysis failed.", "Type your own diagnostic notes here..."] else ""
-                        
-                        final_notes_with_target = base_final_notes
-                        if intended_words_for_saving:
-                            if final_notes_with_target:
-                                final_notes_with_target += f"\n\nIntended Test Words: {intended_words_for_saving}"
-                            else:
-                                final_notes_with_target = f"Intended Test Words: {intended_words_for_saving}"
-
-                        if list_name_for_saving:
-                            final_notes_with_target = f"Word List: {list_name_for_saving}\n\n{final_notes_with_target}".strip()
-
-                        save_obj.teacher_notes = final_notes_with_target # Use teacher's refined notes with appended target words
+    if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
+        # Assuming your current code calls save_assessment and gets an assessment_id
+        assessment_id = save_assessment(
+            student_id=student_id,
+            teacher_id=current_teacher_email,
+            raw_text=st.session_state.get('student_attempts_for_report', ''),
+            analysis_notes=final_notes, # The teacher's edited text box
+            assigned_group=current_student_group_focus
+        )
+        
+        if assessment_id:
+            # Update the global student focus tracking table
+            update_student_current_group_focus(student_id, current_student_group_focus)
             
-                        # Populate g-scores from display, with fallback to 0
-                        save_obj.g0_phonemic_awareness = g_scores_to_save.get("g0", 0)
-                        save_obj.g1_cvc_mapping = g_scores_to_save.get("g1", 0)
-                        save_obj.g2_digraphs = g_scores_to_save.get("g2", 0)
-                        save_obj.g3_silent_e = g_scores_to_save.get("g3", 0)
-                        save_obj.g4_vowel_teams = g_scores_to_save.get("g4", 0)
-                        save_obj.g5_r_controlled = g_scores_to_save.get("g5", 0)
-                        save_obj.g6_clusters = g_scores_to_save.get("g6", 0)
-                        save_obj.g7_multisyllabic = g_scores_to_save.get("g7", 0)
-                        save_obj.g8_reduction_morphology = g_scores_to_save.get("g8", 0)
-
-                        save_obj.suggested_next_groups = targets_to_save
+            # 2. True Evolution Evaluation Check
+            # (Replace variables below with whatever your app named the original unmodified AI payload)
+            has_text_changed = (original_ai_analysis_notes.strip() != refined_analysis_notes.strip())
+            has_group_changed = (ai_suggested_group != current_student_group_focus)
+            has_written_feedback = len(teacher_logic_feedback.strip()) > 0
             
-                        struggling_words = st.session_state.get("struggling_words_input", "")
-                        teacher_observations = st.session_state.get("teacher_observations_input", "")
+            # 3. Trigger tracking loop if a discrepancy exists
+            if has_text_changed or has_group_changed or has_written_feedback:
+                with st.spinner("Analyzing diagnostic logic drift..."):
+                    # Call backend to get the synthesized perceptual error
+                    perceptual_error = get_ai_discrepancy_feedback(
+                        original_notes=original_ai_analysis_notes,
+                        refined_notes=refined_analysis_notes,
+                        suggested_group=ai_suggested_group,
+                        final_group=current_student_group_focus,
+                        teacher_feedback=teacher_logic_feedback
+                    )
+                    
+                    # Log the complete profile out to the database
+                    log_ai_discrepancy(
+                        student_id=student_id,
+                        assessment_id=assessment_id,
+                        ai_suggested_group=ai_suggested_group,
+                        teacher_assigned_group=current_student_group_focus,
+                        teacher_direct_feedback=f"[{perceptual_error}] {teacher_logic_feedback}".strip()
+                    )
             
-                        # Get test template info (need to ensure it's selected in the UI)
-                        # NOTE: The UI now primarily uses "Named Lists". This logic should be reviewed if "Test Templates" are re-introduced.
-                        templates = get_all_test_templates()
-                        template_options = {t['test_name']: t for t in templates}
-                        selected_template_name = st.session_state.get("test_template_selector") # This selector is not currently used in this flow.
-                        selected_template = template_options.get(selected_template_name)
-                        test_template_id = selected_template.get('id') if selected_template else None
-
-                        save_assessment(save_obj, st.session_state.edited_transcription, teacher_refinement=final_notes_with_target, # Pass the modified notes
-                                    struggling_words=struggling_words, teacher_id=current_teacher_email,
-                                    teacher_observations=teacher_observations, test_template=test_template_id) # test_template_id will often be None with current UI
-                        
-                        print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.edited_transcription[:15]}...")
-                        
-                        st.success(f"Assessment for {student_name} has been saved!")
-                        
-                        # Store the ID of the used list for "smart memory"
-                        if st.session_state.get('current_list_id'):
-                            st.session_state.last_used_assessment_list_id = st.session_state.current_list_id
-                        else:
-                            st.session_state.last_used_assessment_list_id = None
-
-                        # Clear assessment-specific state after saving
-                        for key in [
-                            'uploaded_file', 'raw_transcription', 'edited_transcription', 'analysis_result',
-                            'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
-                            'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
-                            'intended_words_input', 'processed_intended_words', 'current_list_id',
-                            f"new_list_name_{student_id}", 'teacher_refined_group' # Clear new list name input
-                        ]:
-                            if key in st.session_state:
-                                del st.session_state[key]
-                        
-                        for i in range(9):
-                            if f'g{i}_score' in st.session_state:
-                                del st.session_state[f'g{i}_score']
-
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error saving assessment: {e}")
+            st.success("Assessment finalized and history updated successfully!")
+            st.rerun()
             
     # Remove this block as it's no longer needed in the main assessment workflow
     # teacher_id = st.session_state.get('user_name')  # Use user_name which contains the email
