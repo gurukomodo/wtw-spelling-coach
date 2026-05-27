@@ -812,6 +812,57 @@ Example: ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8"
         print(f"Word generation error: {e}")
         return get_fallback_words(group_key)
 
+def get_ai_discrepancy_feedback(ai_analysis_context, teacher_correction_context, teacher_group_context, teacher_direct_feedback):
+    """
+    Prompts the AI to analyze its own diagnostic errors based on teacher feedback.
+    """
+    prompt = f"""
+    You are an AI diagnostic system reflecting on your own performance.
+    
+    Here is your ORIGINAL ANALYSIS:
+    {ai_analysis_context}
+
+    Here is the TEACHER'S FINAL CORRECTION/REFINEMENT:
+    {teacher_correction_context}
+
+    Here is the TEACHER'S GROUP ASSIGNMENT vs. your SUGGESTION:
+    {teacher_group_context}
+
+    Here is ADDITIONAL DIRECT FEEDBACK from the teacher (if provided):
+    {teacher_direct_feedback if teacher_direct_feedback else "No direct feedback provided."}
+
+    Your task is to identify the underlying *perceptual or diagnostic error* you made in your original analysis.
+    
+    Consider:
+    - Did you mistake a specific error pattern?
+    - Did you misinterpret the student's mastery of a G-level?
+    - Did you miss a significant error category?
+    - Was there a nuance in the student's writing or the context that you overlooked?
+    
+    Define the specific diagnostic error you made in 1-2 concise sentences.
+    Focus on *your* diagnostic process and where it diverged from the teacher's expert assessment.
+    
+    Example: "I mistook the omission of final consonants as a CVC mastery issue, overlooking the broader phonemic awareness challenge."
+    Example: "I overemphasized a single error type, leading to an incorrect group suggestion, rather than balancing all evidence."
+    Example: "My analysis lacked specific word-level evidence for G4, making my suggestion less convincing to the teacher."
+    
+    CRITICAL: Respond ONLY with the 1-2 sentence description of your diagnostic error. Do not elaborate or provide solutions.
+    """
+    
+    try:
+        response = completion(
+            model="groq/llama-3.3-70b-versatile", # Use a reliable model for self-reflection
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2 # Allow slight creativity for nuanced feedback
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error generating AI discrepancy feedback: {e}")
+        return f"AI self-reflection failed: {str(e)}"
+
+
 def get_fallback_words(target_group):
     """Fallback word lists if AI generation fails."""
     fallback_by_group = {
