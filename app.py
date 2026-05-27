@@ -1031,14 +1031,66 @@ def display_assessment_workflow(student_id, student_name):
                     key="final_diagnostic_notes"
                 )
             
-            # 1. UI Addition for feedback text area
-    teacher_logic_feedback = st.text_area(
-        "Feedback on AI Logic / Blind Spots", 
-        placeholder="e.g., The AI missed short vowel struggles in CVC words...",
-        key=f"logic_feedback_{student_id}"
-    )
+            # New Visual Error Review Component
+            st.subheader("Visual Error Review")
+            st.caption("Mispelled words are highlighted in bold red. This is a read-only view.")
 
-    if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
+            intended_words_raw = st.session_state.get("processed_intended_words", "")
+            student_attempts_raw = st.session_state.get("student_attempts_for_report", "")
+
+            if intended_words_raw and student_attempts_raw:
+                intended_list = [word.strip().lower() for word in intended_words_raw.split(',') if word.strip()]
+                
+                # Parse student attempts: "intended:attempt" pairs
+                student_attempts_list = []
+                for pair in student_attempts_raw.split(','):
+                    if ':' in pair:
+                        attempt = pair.strip().split(':', 1)[1].strip().lower()
+                        student_attempts_list.append(attempt)
+                    else:
+                        # Fallback if no colon (e.g., raw transcription might not have intended:attempt format yet)
+                        student_attempts_list.append(pair.strip().lower()) 
+
+                # Ensure lists are of comparable length, truncate to shorter list
+                min_len = min(len(intended_list), len(student_attempts_list))
+                intended_list = intended_list[:min_len]
+                student_attempts_list = student_attempts_list[:min_len]
+
+                display_html_parts = []
+                for i in range(min_len):
+                    intended_word = intended_list[i]
+                    student_attempt = student_attempts_list[i]
+                    
+                    if student_attempt == intended_word:
+                        display_html_parts.append(f"<span>{i+1}. {student_attempt}</span>")
+                    else:
+                        display_html_parts.append(f"<span>{i+1}. <span style='color:red; font-weight:bold;'>{student_attempt}</span></span>")
+                
+                if display_html_parts:
+                    # Display words in columns, 4 per row
+                    cols_per_row = 4
+                    num_rows = (len(display_html_parts) + cols_per_row - 1) // cols_per_row
+                    
+                    for r in range(num_rows):
+                        cols = st.columns(cols_per_row)
+                        for c in range(cols_per_row):
+                            idx = r * cols_per_row + c
+                            if idx < len(display_html_parts):
+                                with cols[c]:
+                                    st.markdown(display_html_parts[idx], unsafe_allow_html=True)
+                else:
+                    st.info("No words to display for visual error review.")
+            else:
+                st.info("Upload a photo and run analysis to see the visual error review.")
+
+            # UI Addition for feedback text area
+            teacher_logic_feedback = st.text_area(
+                "Feedback on AI Logic / Blind Spots", 
+                placeholder="e.g., The AI missed short vowel struggles in CVC words...",
+                key=f"logic_feedback_{student_id}"
+            )
+
+            if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
         if not student_id:
             st.error("Cannot save assessment: Student ID is missing.")
             return
