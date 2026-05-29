@@ -779,7 +779,7 @@ def display_assessment_workflow(student_id, student_name):
             "Choose a word list method:",
             options=["Select Existing List", "Create New List"],
             key=f"word_list_mode_{student_id}",
-            index=0 if st.session_state.current_word_list_mode == "select_existing" else 1,
+            index=0,
             horizontal=True
         )
 
@@ -799,32 +799,40 @@ def display_assessment_workflow(student_id, student_name):
                 if last_used_list and last_used_list['list_name'] in list_options:
                     default_index = list(list_options.keys()).index(last_used_list['list_name'])
             
-            selected_list_id = st.selectbox(
-                "Select an existing word list:",
-                options=list(list_options.keys()),
+        # Force a refresh of the named lists to ensure the dropdown renders
+        named_lists = get_named_lists(current_teacher_email)
+        list_options = {"Select a saved list...": None}
+        for lst in named_lists:
+            list_options[lst['list_name']] = lst['id']
+
+        # Ensure default index is valid for the current list_options keys
+        default_index = 0
+        keys_list = list(list_options.keys())
+        if st.session_state.get("last_used_assessment_list_id"):
+            last_used_list = get_named_list_by_id(st.session_state.last_used_assessment_list_id)
+            if last_used_list and last_used_list['list_name'] in list_options:
+                default_index = keys_list.index(last_used_list['list_name'])
+
+        selected_list_name = st.selectbox(
+            "Select an existing word list:",
+            options=keys_list,
                 format_func=lambda x: x,
                 key=f"select_word_list_{student_id}",
                 index=default_index
             )
             
-            if selected_list_id and list_options[selected_list_id] is not None:
-                list_data = get_named_list_by_id(list_options[selected_list_id])
-                if list_data:
-                    st.session_state.intended_words_input = list_data['target_words']
-                    st.session_state.current_list_id = list_data['id'] # Store ID for smart memory
-                    selected_list_name_display = list_data['list_name']
-                else:
-                    st.session_state.intended_words_input = ""
-                    st.session_state.current_list_id = None
+        if selected_list_name != "Select a saved list..." and selected_list_name in list_options:
+            list_id = list_options[selected_list_name]
+            list_data = get_named_list_by_id(list_id)
+            if list_data:
+                st.session_state.intended_words_input = list_data['target_words']
+                st.session_state.current_list_id = list_data['id']
+                st.session_state.last_used_assessment_list_id = list_data['id']
+                st.info(f"Selected list: **{selected_list_name}** (ID: {list_data['id']})")
             else:
                 st.session_state.intended_words_input = ""
                 st.session_state.current_list_id = None
-            
-            if st.session_state.current_list_id:
-                st.info(f"Selected list: **{selected_list_name_display}** (ID: {st.session_state.current_list_id})")
-            else:
                 st.info("No list selected. Please create one or select from above.")
-
 
         else: # Create New List
             new_list_name = st.text_input(
@@ -833,7 +841,7 @@ def display_assessment_workflow(student_id, student_name):
             )
             st.session_state.intended_words_input = st.text_area(
                 "Enter the intended words (comma-separated or one per line):",
-                value=st.session_state.get("intended_words_input", ""), # Keep value if typed before switching modes
+            value=st.session_state.get("intended_words_input", ""),
                 height=150,
                 key=f"intended_words_input_{student_id}",
                 placeholder="e.g., cat, dog, run, jump\nor\ncat\ndog\nrun\njump"
@@ -847,8 +855,7 @@ def display_assessment_workflow(student_id, student_name):
                     )
                     if success:
                         st.success(f"Word list '{new_list_name}' saved!")
-                        st.session_state.current_word_list_mode = "Select Existing List" # Switch to select after saving
-                        # Automatically select the newly saved list
+                        st.session_state.current_word_list_mode = "Select Existing List"
                         named_lists_after_save = get_named_lists(current_teacher_email)
                         for lst in named_lists_after_save:
                             if lst['list_name'] == new_list_name.strip():
@@ -995,228 +1002,111 @@ def display_assessment_workflow(student_id, student_name):
             
             # Step 7: Teacher Refinement
             st.subheader("Step 7: Teacher Refinement")
-            st.caption("Review the AI's notes above. Verify and record your final diagnostic decision.")
+            st.caption("Review the AI's notes and spelling analysis. Verify and record your final diagnostic decision.")
             
+# Logic to prepare the visual review content
+        intended_words_raw = st.session_state.get("processed_intended_words", "")
+        student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
+
+        highlighted_content = ""
+        min_len = 0
+        if intended_words_raw and student_attempts_raw:
+            intended_list = [w.strip().lower() for w in intended_words_raw.replace('\n', ',').split(',') if w.strip()]
+            attempts_raw = [a.strip().lower() for a in student_attempts_raw.replace('\n', ',').split(',') if a.strip()]
+            
+            min_len = min(len(intended_list), len(attempts_raw))
+            
+            for i in range(min_len):
+                try:
+                    if attempts_raw[i] == intended_list[i]:
+                        highlighted_content += f"{i+1}. {attempts_raw[i]}  \n"
+                    else:
+                        highlighted_content += f"{i+1}. <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span>  \n"
+                except Exception as e:
+                    print(f"DEBUG: Error matching index {i}: {e}")
+                    highlighted_content += f"{i+1}. {attempts_raw[i]} (error)  \n"
+    else:
+            highlighted_content = "No attempt data available."
+
             col1, col2 = st.columns(2)
-            # Uniformly read from and write to 'student_attempts_for_report'
             with col1:
-                st.text_area(
-                    "Student's Spelling Attempts", 
-                    value=st.session_state.get('student_attempts_for_report', ""),
-                    height=400,
-                    key="student_attempts_for_report"
-                )
-            
-            with col2:
-                # Group Focus Suggestion - Dynamic from constants
-                group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
-                ai_suggested_list = st.session_state.get('targets_display', [])
-                ai_suggested = ai_suggested_list[0] if ai_suggested_list else 'g1'
-                if ai_suggested not in group_keys:
-                    ai_suggested = 'g1'
-                default_index = group_keys.index(ai_suggested)
-
-                st.selectbox(
-                    "Suggested Group Focus (Adjust if needed):",
-                    options=group_keys,
-                    index=default_index,
-                    format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
-                    key="teacher_refined_group"
-                )
-
-                final_notes = st.text_area(
-                    "Final Diagnostic Notes (The 'Gold Standard')", 
-                    value=st.session_state.get('final_diagnostic_notes', ''), 
-                    height=400,
-                    key="final_diagnostic_notes"
-                )
-            
-            # New Visual Error Review Component
-            st.subheader("Visual Error Review")
-            st.caption("Mispelled words are highlighted in bold red. This is a read-only view.")
-
-            intended_words_raw = st.session_state.get("processed_intended_words", "")
-            student_attempts_raw = st.session_state.get("student_attempts_for_report", "")
-
-            if intended_words_raw and student_attempts_raw:
-                intended_list = [word.strip().lower() for word in intended_words_raw.split(',') if word.strip()]
-                
-                # Parse student attempts: "intended:attempt" pairs
-                student_attempts_list = []
-                for pair in student_attempts_raw.split(','):
-                    if ':' in pair:
-                        attempt = pair.strip().split(':', 1)[1].strip().lower()
-                        student_attempts_list.append(attempt)
-                    else:
-                        # Fallback if no colon (e.g., raw transcription might not have intended:attempt format yet)
-                        student_attempts_list.append(pair.strip().lower()) 
-
-                # Ensure lists are of comparable length, truncate to shorter list
-                min_len = min(len(intended_list), len(student_attempts_list))
-                intended_list = intended_list[:min_len]
-                student_attempts_list = student_attempts_list[:min_len]
-
-                display_html_parts = []
-                for i in range(min_len):
-                    intended_word = intended_list[i]
-                    student_attempt = student_attempts_list[i]
-                    
-                    if student_attempt == intended_word:
-                        display_html_parts.append(f"<span>{i+1}. {student_attempt}</span>")
-                    else:
-                        display_html_parts.append(f"<span>{i+1}. <span style='color:red; font-weight:bold;'>{student_attempt}</span></span>")
-                
-                if display_html_parts:
-                    # Display words in columns, 4 per row
-                    cols_per_row = 4
-                    num_rows = (len(display_html_parts) + cols_per_row - 1) // cols_per_row
-                    
-                    for r in range(num_rows):
-                        cols = st.columns(cols_per_row)
-                        for c in range(cols_per_row):
-                            idx = r * cols_per_row + c
-                            if idx < len(display_html_parts):
-                                with cols[c]:
-                                    st.markdown(display_html_parts[idx], unsafe_allow_html=True)
-                else:
-                    st.info("No words to display for visual error review.")
-            else:
-                st.info("Upload a photo and run analysis to see the visual error review.")
-
-            # UI Addition for feedback text area
-            teacher_logic_feedback = st.text_area(
-                "Feedback on AI Logic / Blind Spots", 
-                placeholder="e.g., The AI missed short vowel struggles in CVC words...",
-                key=f"logic_feedback_{student_id}"
+                        st.markdown("**Student's Spelling Attempts**")
+                        st.markdown(
+                            f"""<div style="background-color: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333333; color: #f0f2f6; font-family: monospace; line-height: 1.6;">
+                            {highlighted_content}
+                            </div>""",
+                            unsafe_allow_html=True
             )
 
+            with col2:
+                        group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
+                        ai_suggested_list = st.session_state.get('targets_display', [])
+                        ai_suggested = ai_suggested_list[0] if ai_suggested_list else 'g1'
+                        if ai_suggested not in group_keys: ai_suggested = 'g1'
+
+                        selected_group = st.selectbox(
+                            "Suggested Group Focus (Adjust if needed):",
+                            options=group_keys,
+                            index=group_keys.index(ai_suggested),
+                            format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
+                            key="teacher_refined_group"
+                        )
+
+                        st.text_area(
+                            "Final Diagnostic Notes (The 'Gold Standard')",
+                            value=st.session_state.get('final_diagnostic_notes', ''),
+                            height=330,
+                            key="final_diagnostic_notes"
+                                )
+
+            teacher_logic_feedback = st.text_area(
+                        "Feedback on AI Logic / Blind Spots",
+                        placeholder="e.g., The AI missed short vowel struggles in CVC words...",
+                        key=f"logic_feedback_{student_id}"
+                                )
+
             if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
-                if not student_id:
-                    st.error("Cannot save assessment: Student ID is missing.")
-                    return
-                if not st.session_state.get('student_attempts_for_report'):
-                    st.error("Cannot save assessment: No student spelling attempts recorded (Step 3).")
-                    return
+                        from ai_learning_engine import ingest_teacher_calibration
 
-                # Retrieve values needed for saving and discrepancy logging
-                teacher_final_notes = st.session_state.get('final_diagnostic_notes', '').strip()
-                teacher_assigned_group = st.session_state.get('teacher_refined_group', 'g1')
-                teacher_feedback_on_ai = st.session_state.get(f"logic_feedback_{student_id}", '').strip()
-                
-                # AI's original analysis results
-                ai_original_analysis_object = st.session_state.get('analysis_result')
-                ai_original_notes = getattr(ai_original_analysis_object, 'teacher_notes', '').strip()
-                ai_suggested_groups_list = getattr(ai_original_analysis_object, 'suggested_next_groups', [])
-                ai_suggested_group = ai_suggested_groups_list[0] if ai_suggested_groups_list else 'g1'
+                        # Capture finalized inputs
+                        student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
+                        final_group = st.session_state.get("teacher_refined_group", selected_group)
+                        teacher_feedback = st.session_state.get(f"logic_feedback_{student_id}", "")
 
+                        assessment_name = st.session_state.get(f"select_word_list_{student_id}", "Unspecified Assessment List")
 
-                try:
-                    # Construct save_obj and other parameters as expected by database_manager.save_assessment
-                    # Assuming a structure similar to what was previously used in a working save block
-                    class AssessmentSaveObject:
-                        pass
-                    save_obj = AssessmentSaveObject()
-                    save_obj.student_id = student_id
-                    save_obj.real_name = student_name # Assuming student_name is available
-                    save_obj.teacher_id = current_teacher_email
-                    save_obj.raw_transcription = st.session_state.get('edited_transcription', '') # Use edited_transcription
-                    save_obj.teacher_notes = teacher_final_notes
-                    save_obj.suggested_next_groups = teacher_assigned_group # Save teacher's final assigned group here
+                        assessment_data = {
+                            "student_id": student_id,
+                            "teacher_id": current_teacher_email,
+                            "raw_transcription": student_attempts_raw,
+                            "teacher_refined_notes": st.session_state.get("final_diagnostic_notes", ""),
+                            "suggested_next": final_group,
+                            "test_name": assessment_name
+                        }
 
-                    # Populate G-scores from display, with fallback to 0
-                    g_scores_to_save = st.session_state.get('g_scores_display', {})
-                    save_obj.g0_phonemic_awareness = g_scores_to_save.get("g0", 0)
-                    save_obj.g1_cvc_mapping = g_scores_to_save.get("g1", 0)
-                    save_obj.g2_digraphs = g_scores_to_save.get("g2", 0)
-                    save_obj.g3_silent_e = g_scores_to_save.get("g3", 0)
-                    save_obj.g4_vowel_teams = g_scores_to_save.get("g4", 0)
-                    save_obj.g5_r_controlled = g_scores_to_save.get("g5", 0)
-                    save_obj.g6_clusters = g_scores_to_save.get("g6", 0)
-                    save_obj.g7_multisyllabic = g_scores_to_save.get("g7", 0)
-                    save_obj.g8_reduction_morphology = g_scores_to_save.get("g8", 0)
+                        if save_assessment(assessment_data, raw_text=student_attempts_raw):
+                            # Retrieve the original notes and calibration data
+                            original_notes = st.session_state.get(f"ai_analysis_{student_id}", "")
+                            refined_notes = st.session_state.get("final_diagnostic_notes", "")
 
-                    struggling_words = st.session_state.get("struggling_words_input", "") # Still used?
-                    teacher_observations = st.session_state.get("teacher_observations_input", "") # Still used?
-                    test_template_id = st.session_state.get('current_list_id') # Use the ID of the selected named list
+                            ingest_teacher_calibration(
+                                student_id=student_id,
+                                assessment_id=None,
+                                ai_suggested_group=st.session_state.get(f"ai_group_{student_id}", "g1"),
+                                teacher_assigned_group=final_group,
+                                teacher_feedback=teacher_feedback,
+                                original_notes=original_notes,
+                                refined_notes=refined_notes
+                            )
 
-                    # Call save_assessment - ASSUMING IT RETURNS THE ASSESSMENT_ID
-                    assessment_id = save_assessment(save_obj, st.session_state.get('student_attempts_for_report', ''), 
-                                                    teacher_refinement=teacher_final_notes, # Pass the final notes
-                                                    struggling_words=struggling_words, teacher_id=current_teacher_email,
-                                                    teacher_observations=teacher_observations, test_template=test_template_id)
-                    
-                    if assessment_id:
-                        print(f"DEBUG: Final report using attempts from Step 3: {st.session_state.get('student_attempts_for_report', '')[:15]}...")
-                        st.success(f"Assessment for {student_name} has been saved!")
+                            st.success("Assessment saved successfully!")
 
-                        # Update the global student focus tracking table after successful assessment save
-                        update_student_current_group_focus(student_id, teacher_assigned_group)
-                        
-                        # --- Discrepancy Logging Logic ---
-                        # Check for discrepancies: notes differ, groups mismatch, or direct feedback provided
-                        discrepancy_found = False
-                        if teacher_final_notes != ai_original_notes:
-                            discrepancy_found = True
-                            print(f"DEBUG: Discrepancy found in teacher notes. Teacher: '{teacher_final_notes[:30]}...' AI: '{ai_original_notes[:30]}...'")
-                        if teacher_assigned_group != ai_suggested_group:
-                            discrepancy_found = True
-                            print(f"DEBUG: Discrepancy found in suggested group. Teacher: {teacher_assigned_group} AI: {ai_suggested_group}")
-                        if teacher_feedback_on_ai:
-                            discrepancy_found = True
-                            print(f"DEBUG: Direct teacher feedback provided: {teacher_feedback_on_ai[:30]}...")
+                            # Clean up session state
+                            for key in [f"edited_transcription_{student_id}", "final_diagnostic_notes", f"logic_feedback_{student_id}"]:
+                                if key in st.session_state:
+                                    del st.session_state[key]
 
-                        if discrepancy_found:
-                            with st.spinner("Analyzing AI's perceptual error..."):
-                                # Prepare data for AI discrepancy analysis
-                                ai_analysis_context = f"AI's original analysis: {ai_original_notes}"
-                                teacher_correction_context = f"Teacher's final notes: {teacher_final_notes}"
-                                teacher_group_context = f"Teacher assigned group: {teacher_assigned_group}, AI suggested group: {ai_suggested_group}"
-                                
-                                ai_perceptual_error_feedback = get_ai_discrepancy_feedback(
-                                    ai_analysis_context=ai_analysis_context,
-                                    teacher_correction_context=teacher_correction_context,
-                                    teacher_group_context=teacher_group_context,
-                                    teacher_direct_feedback=teacher_feedback_on_ai
-                                )
-                                print(f"DEBUG: AI Perceptual Error Feedback: {ai_perceptual_error_feedback[:100]}...")
-
-                                log_ai_discrepancy(
-                                    student_id=student_id,
-                                    assessment_id=assessment_id,
-                                    ai_suggested_group=ai_suggested_group,
-                                    teacher_assigned_group=teacher_assigned_group,
-                                    teacher_direct_feedback=f"[{ai_perceptual_error_feedback}] {teacher_feedback_on_ai}".strip()
-                                )
-                                st.info("Discrepancy logged for AI improvement.")
-                        # --- End Discrepancy Logging Logic ---
-                        
-                        # Store the ID of the used list for "smart memory"
-                        if st.session_state.get('current_list_id'):
-                            st.session_state.last_used_assessment_list_id = st.session_state.current_list_id
-                        else:
-                            st.session_state.last_used_assessment_list_id = None
-
-                        # Clear assessment-specific state after saving
-                        for key in [
-                            'uploaded_file', 'raw_transcription', f'edited_transcription_{student_id}', 'analysis_result', # Use student_id specific key
-                            'student_attempts_for_report', 'final_diagnostic_notes', 'analysis_notes',
-                            'g_scores_display', 'targets_display', 'raw_ai_result', classroom_data_key,
-                            'intended_words_input', 'processed_intended_words', 'current_list_id',
-                            f"new_list_name_{student_id}", 'teacher_refined_group', # Clear new list name input and refined group
-                            f"teacher_direct_feedback_{student_id}", f"logic_feedback_{student_id}" # Clear direct feedback inputs
-                        ]:
-                            if key in st.session_state:
-                                del st.session_state[key]
-                        
-                        for i in range(9): # Clear individual g-score states
-                            if f'g{i}_score' in st.session_state:
-                                del st.session_state[f'g{i}_score']
-
-                        st.rerun()
-                    else:
-                        st.error("Failed to save assessment: No assessment ID returned.")
-                except Exception as e:
-                    st.error(f"Error saving assessment: {e}")
+                            st.rerun()
             
     
             
@@ -1676,41 +1566,45 @@ def display_admin_page():
     st.markdown("---")
 
     # Platform Administrator Report: Active AI Corrections
+    from ai_learning_engine import get_unified_learning_ledger
+
     st.subheader("Platform Administrator Report: Active AI Corrections")
 
-    corrections = get_historical_corrections(limit=50)
+    ledger_data = get_unified_learning_ledger()
 
-    if not corrections:
-        st.info("No AI corrections recorded yet.")
+    if not ledger_data:
+                st.info("No AI macro calibrations recorded yet.")
     else:
-        # Display corrections in a clean table structure
-        for correction in corrections:
-            row_id, word_tested, ai_transcription, teacher_transcription, context_notes = correction
+                # Convert list of dicts to DataFrame for neat visualization
+                df_ledger = pd.DataFrame(ledger_data)
 
-            with st.container():
-                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 3, 1])
-                with col1:
-                    st.text(f"Word: {word_tested}")
-                with col2:
-                    st.text(f"AI: {ai_transcription}")
-                with col3:
-                    st.text(f"Teacher: {teacher_transcription}")
-                with col4:
-                    st.text(f"Notes: {context_notes or 'N/A'}")
-                with col5:
-                    # Assuming `row_id` is the 'id' of the correction and `student_id` is part of the `correction` tuple (added in DB change)
-                    # The existing delete_specific_correction only takes ID, which is fine for deletion
-                    if st.button("Forget This", key=f"forget_{row_id}", type="secondary"):
-                        if delete_specific_correction(row_id):
-                            st.success(f"Forgotten correction for '{word_tested}'")
-                            st.rerun()
-                        else:
-                            st.error("Failed to forget correction")
-                st.markdown("---")
+                # Ensure expected columns exist, provide defaults if missing
+                cols_to_show = {
+                    "timestamp": "Timestamp",
+                    "student_id": "Student ID",
+                    "ai_suggested_group": "AI Group",
+                    "teacher_assigned_group": "Teacher Group",
+                    "teacher_feedback": "Teacher Note",
+                    "calibration_note": "AI Calibration"
+                }
+
+                # Reorder and rename columns for the UI
+                available_cols = [c for c in cols_to_show.keys() if c in df_ledger.columns]
+                display_df = df_ledger[available_cols].rename(columns=cols_to_show)
+
+                # Render using interactive dataframe
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Teacher Note": st.column_config.TextColumn("Teacher Note", width="medium"),
+                        "AI Calibration": st.column_config.TextColumn("AI Calibration", width="large")
+                    }
+                )
 
 # =============================================================================
 # RUN THE APP
 # =============================================================================
 if __name__ == "__main__":
     main()
-
