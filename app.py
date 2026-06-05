@@ -1,3 +1,4 @@
+import streamlit as st
 import json
 import os
 os.environ["OTEL_SDK_DISABLED"] = "true"
@@ -485,19 +486,28 @@ def show_teacher_dashboard():
         display_admin_page()
 
 # =============================================================================
-# COMPONENT: CLASS PAGE (student-centric view)
+# COMPONENT: CLASS PAGE (Fully Merged & Operational)
 # =============================================================================
 def display_class_page():
+    import streamlit as st
+    import pandas as pd
+    import constants
+    from database_manager import get_all_students_by_teacher, add_student
+    from assessment_generator import generate_class_diagnostics, render_assessment_pdf
+
     st.title("Class Overview")
     
-    # 1. Fetch Students from DB
-    from database_manager import get_all_students_by_teacher
-    # Note: Ensure this returns student_id, real_name, and suggested_next
+    # Ensure our persistent diagnostic history container exists in state
+    if "class_diagnostic_history" not in st.session_state:
+        st.session_state["class_diagnostic_history"] = []
+    
+    # 1. Fetch REAL Students from DB
     students = get_all_students_by_teacher(st.session_state.user_email)
     
-    # 2. SHOW STUDENT LIST FIRST
+    # 2. SHOW STUDENT ROSTER
     if not students:
         st.info("No students in your class yet. Use the form below to add one.")
+        class_levels = ['g1'] # Safe fallback for generator if class is empty
     else:
         st.subheader("Your Students")
         h1, h2, h3 = st.columns([3, 1, 2])
@@ -505,17 +515,17 @@ def display_class_page():
         h2.caption("GROUP")
         h3.caption("ACTION")
 
+        class_levels = [] # Collect real levels for our generator engine
         for s in students:
-            # We use 'student_id' and 'name' to match your database_manager logic
             sid = s.get('student_id')
             sname = s.get('name')
             sgroup = s.get('current_g_level', 'g1')
+            class_levels.append(sgroup)
             
             col1, col2, col3 = st.columns([3, 1, 2])
             col1.write(f"**{sname}**")
             col2.write(f"Group {sgroup[-1] if sgroup else '1'}")
             
-            # Use 'student_id' for the key to avoid the KeyError
             if col3.button("View Profile", key=f"btn_{sid}"):
                 st.session_state.selected_student_id = sid
                 st.session_state.next_page = "Student"
@@ -523,8 +533,8 @@ def display_class_page():
 
     st.divider()
 
-    # 3. ADD STUDENT SECTION AT THE BOTTOM
-    with st.expander("➕ Add New Student"):
+    # 3. ADD STUDENT SECTION
+    with st.expander("Add New Student"):
         with st.form("add_new_student", clear_on_submit=True):
             name = st.text_input("Full Name")
             group = st.selectbox(
@@ -536,13 +546,75 @@ def display_class_page():
 
             if st.form_submit_button("Create Student Record"):
                 if name:
-                    from database_manager import add_student
-                    if add_student(st.session_state.user_email, name, group): # Changed from f"g{group}" to group
+                    if add_student(st.session_state.user_email, name, group):
                         st.success(f"Success! {name} added.")
                         st.rerun()
                 else:
                     st.error("Please enter a name.")
 
+    st.divider()
+
+    # 4. GENERATE CLASS DIAGNOSTICS SECTION
+    st.header("⚡ Generate Class Diagnostic Assessments")
+    st.write("Construct evaluation sheets to assess spelling mastery and track performance across your current active class profiles.")
+    
+    col_b1, col_b2 = st.columns(2)
+    
+    with col_b1:
+        if st.button("Create Standard Baseline PSI", key="generate_psi_baseline_btn", use_container_width=True):
+            from assessment_generator import generate_psi_baseline
+            new_psi = generate_psi_baseline()
+            
+            # Prevent duplicate baseline additions to history tracking
+            if not any(t['assessment_id'] == 'DIAG-PSI-BASE' for t in st.session_state["class_diagnostic_history"]):
+                st.session_state["class_diagnostic_history"].insert(0, new_psi)
+                st.success("Standard Primary Spelling Inventory generated successfully!")
+                st.rerun()
+            else:
+                st.warning("The Baseline PSI document is already present in your ledger history list below.")
+
+    with col_b2:
+        if st.button("Create Dynamic Group Tests", key="generate_diagnostic_run_btn", use_container_width=True):
+            with st.spinner("Analyzing class spread and building targeted tests..."):
+                new_tests = generate_class_diagnostics(class_levels)
+                st.session_state["class_diagnostic_history"].extend(new_tests)
+                st.success(f"Successfully constructed {len(new_tests)} targeted structural tests!")
+                st.rerun()
+
+    # 5. PERSISTENT HISTORY LEDGER INTERFACE
+    if st.session_state["class_diagnostic_history"]:
+        st.write("---")
+        st.subheader("Available Class Diagnostic Ledger")
+        st.info("These documents can be re-downloaded or printed at any point. The app will use the tracking ID under the QR code to lock in the grading rubric automatically.")
+        
+        for idx, test in enumerate(st.session_state["class_diagnostic_history"]):
+            with st.container():
+                st.write("") # Padding spacer
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.write(f"**{test['test_name']}** (`{test['assessment_id']}`)")
+                    st.caption(f"Created: {test['created_at']} | Words: {', '.join(test['words'])}")
+                
+                with col2:
+                    teacher_bytes = render_assessment_pdf(test, is_teacher=True)
+                    st.download_button(
+                        label="Teacher Copy",
+                        data=teacher_bytes,
+                        file_name=f"Teacher_Guide_{test['assessment_id']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_teach_{test['assessment_id']}_{idx}"
+                    )
+                    
+                with col3:
+                    student_bytes = render_assessment_pdf(test, is_teacher=False)
+                    st.download_button(
+                        label="Student Sheets",
+                        data=student_bytes,
+                        file_name=f"Student_Blanks_{test['assessment_id']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_stud_{test['assessment_id']}_{idx}"
+                    )
+                st.write("---")
 def display_student_detail_view(student_id, current_teacher_email):
     """Display simplified detail view for a selected student."""
     # Get student name with proper fallback
@@ -649,21 +721,21 @@ def display_student_detail_view(student_id, current_teacher_email):
     st.subheader("Diagnostic Assessment History")
     if history:
         for assessment in reversed(history):
+            # 1. Fetch test name, prioritising the DB field, else fallback to legacy parsing
+            raw_name = assessment.get('test_name')
             test_name = "Ad-hoc Assessment"
-            if assessment.get('teacher_refined_notes'):
-                refinement_notes = assessment['teacher_refined_notes']
+
+            if raw_name and raw_name not in ["Unspecified Assessment List", "Select a saved list...", "None", ""]:
+                test_name = raw_name
+            else:
+                refinement_notes = assessment.get('teacher_refined_notes', '')
                 if refinement_notes.startswith("Word List:"):
-                    first_line = refinement_notes.split('\n')[0]
-                    test_name = first_line.replace("Word List: ", "").strip()
-                elif assessment.get('test_template'):
-                    template_data = get_test_template(assessment['test_template'])
-                    if template_data:
-                        test_name = template_data.get('test_name', 'Unnamed Test')
+                    test_name = refinement_notes.split('\n')[0].replace("Word List: ", "").strip()
 
             created_at = assessment.get('created_at', 'N/A')
             date_only = created_at.split(' ')[0] if created_at and ' ' in created_at else created_at
             suggested_group = assessment.get('suggested_next', 'N/A').upper()
-            
+
             expander_title = f"**{test_name}** – {date_only} (Suggested: {suggested_group})"
 
             with st.expander(expander_title, expanded=False):
@@ -672,23 +744,23 @@ def display_student_detail_view(student_id, current_teacher_email):
                     st.code(assessment['raw_transcription'], language='text')
                 else:
                     st.info("No student responses recorded for this assessment.")
-
+        
                 st.subheader("Teacher Notes")
                 if assessment.get('teacher_refined_notes'):
                     st.markdown(assessment['teacher_refined_notes'])
                 else:
                     st.info("No teacher notes recorded for this assessment.")
-                
+
                 # Dynamic G-Level Score Processing from constants.py
                 diagnostic_groups = getattr(constants, 'DIAGNOSTIC_GROUPS', {})
                 if diagnostic_groups:
                     # Look for explicit exact key matches (e.g., assessment['g1'])
                     g_scores_found = {
-                        k: assessment.get(k) 
-                        for k in assessment.keys() 
+                        k: assessment.get(k)
+                        for k in assessment.keys()
                         if k in diagnostic_groups and assessment.get(k) is not None
                     }
-                    
+
                     # Resilient Fallback: Look for verbose field matching (e.g., assessment['g1_cvc_mapping'])
                     if not g_scores_found:
                         g_scores_found = {
@@ -703,7 +775,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                         for k, v in g_scores_found.items():
                             group_name = diagnostic_groups[k].get('name', 'Unknown Focus')
                             st.write(f"- **{k.upper()}** ({group_name}): {v}")
-                
+
                 col_del_btn, _ = st.columns([1, 4])
                 with col_del_btn:
                     with st.popover("Delete this assessment?", use_container_width=True):
@@ -725,7 +797,7 @@ def display_student_detail_view(student_id, current_teacher_email):
         st.write(f"**Found {len(st.session_state[classroom_data_key])} recent observations.**")
     else:
         st.info("No classroom observation data recorded yet. Ensure Google Sheet URL is configured in settings.")
-    
+
     st.divider()
 
     # =============================================================================
@@ -740,8 +812,7 @@ def display_student_detail_view(student_id, current_teacher_email):
     # STEP 7: TEACHER REFINEMENT
     # =============================================================================
     st.subheader("Step 7: Teacher Refinement")
-    
-    # Only show the interactive refinement workspace if an analysis has actually been executed
+
     if not st.session_state.get("analysis_result"):
         st.info("⏳ Waiting for assessment processing. Complete Steps 1–6 above to run the AI analysis and unlock Teacher Refinement.")
     else:
@@ -751,38 +822,46 @@ def display_student_detail_view(student_id, current_teacher_email):
         if st.session_state.get("processed_intended_words") and st.session_state.get('student_attempts_for_report'):
             intended_words_raw = st.session_state.get("processed_intended_words", "")
             student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
-                
+
             # Clean target words list
             intended_list = [w.strip().lower() for w in intended_words_raw.replace('\n', ',').split(',') if w.strip()]
-            
-            # Smart clean for student attempts: split by newlines or commas, then strip out numbers (e.g., "1. fan" -> "fan")
+
+            # Parse rows from student_attempts_raw
             raw_lines = student_attempts_raw.replace(',', '\n').split('\n')
             attempts_raw = []
+
+            import re
             for line in raw_lines:
-                cleaned = line.strip().lower()
-                if not cleaned:
+                cleaned_line = line.strip().lower()
+                if not cleaned_line:
                     continue
-                # Strip leading numbers and punctuation (e.g., "1. " or "1- ")
-                import re
-                cleaned = re.sub(r'^\d+[\.\-\s)]+', '', cleaned).strip()
-                if cleaned:
-                    attempts_raw.append(cleaned)
-                
+
+                if ":" in cleaned_line:
+                    parts = cleaned_line.split(":", 1)
+                    student_word = parts[1].strip()
+                else:
+                    student_word = re.sub(r'^\d+[\.\-\s)]+', '', cleaned_line).strip()
+
+                if student_word:
+                    attempts_raw.append(student_word)
+
             min_len = min(len(intended_list), len(attempts_raw))
-                
+
+            # Build an explicit HTML list format for a clean layout presentation
+            highlighted_content += "<ul style='list-style-type: none; padding-left: 0; margin: 0;'>"
             for i in range(min_len):
-                try:
-                    if attempts_raw[i] == intended_list[i]:
-                        highlighted_content += f"{i+1}. {attempts_raw[i]}  \n"
-                    else:
-                        highlighted_content += f"{i+1}. <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span> <span style='color:#777; font-size:0.8em;'>({intended_list[i]})</span>  \n"
-                except Exception as e:
-                    highlighted_content += f"{i+1}. {attempts_raw[i]} (error)  \n"
-                    
-            # If the student wrote more or fewer words than targets, append remaining
+                target = intended_list[i]
+                attempt = attempts_raw[i]
+
+                if attempt == target:
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: {attempt}</li>"
+                else:
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: <span style='color:#d9534f; font-weight:bold;'>{attempt}</span></li>"
+
             if len(attempts_raw) > min_len:
                 for i in range(min_len, len(attempts_raw)):
-                    highlighted_content += f"{i+1}. <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span> (Extra Word)  \n"
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. Extra: <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span></li>"
+            highlighted_content += "</ul>"
         else:
             highlighted_content = "*Waiting for assessment data to be processed above...*"
 
@@ -798,9 +877,16 @@ def display_student_detail_view(student_id, current_teacher_email):
 
         with col2:
             group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
+            analysis_obj = st.session_state.get('analysis_result')
+
+            g1_score = getattr(analysis_obj, 'g1_cvc_mapping', 0) or getattr(analysis_obj, 'g1', 0)
             ai_suggested_list = st.session_state.get('targets_display', [])
             ai_suggested = ai_suggested_list[0] if ai_suggested_list else 'g1'
-            if ai_suggested not in group_keys: ai_suggested = 'g1'
+
+            if g1_score and int(g1_score) < 3 and 'g1' in group_keys:
+                ai_suggested = 'g1'
+            elif ai_suggested not in group_keys:
+                ai_suggested = 'g1'
 
             if "teacher_refined_group" not in st.session_state:
                 st.session_state.teacher_refined_group = ai_suggested
@@ -813,6 +899,45 @@ def display_student_detail_view(student_id, current_teacher_email):
                 key="teacher_refined_group"
             )
 
+            # --- NEW: LIVE AI SCORE READOUT ---
+            st.markdown("---")
+            st.markdown("**AI's Raw G-Level Scores**")
+            st.caption("How the AI evaluated the patterns in this test:")
+
+            analysis_obj = st.session_state.get('analysis_result')
+            if analysis_obj:
+                keys_to_check = [
+                    ('g0', 'g0_phonemic_awareness'),
+                    ('g1', 'g1_cvc_mapping'),
+                    ('g2', 'g2_digraphs'),
+                    ('g3', 'g3_silent_e'),
+                    ('g4', 'g4_vowel_teams'),
+                    ('g5', 'g5_r_controlled'),
+                    ('g6', 'g6_clusters'),
+                    ('g7', 'g7_multisyllabic'),
+                    ('g8', 'g8_reduction_morphology')
+                ]
+                has_scores = False
+                for short_k, long_k in keys_to_check:
+                    val = getattr(analysis_obj, long_k, None) if not isinstance(analysis_obj, dict) else analysis_obj.get(long_k, None)
+                    if val is not None:
+                        group_name = constants.DIAGNOSTIC_GROUPS.get(short_k, {}).get('name', 'Unknown Feature')
+                        st.write(f"- **{short_k.upper()}** ({group_name}): `{val}`")
+                        has_scores = True
+                if not has_scores:
+                    st.info("No numerical sub-scores parsed from the AI output.")
+            else:
+                st.info("No scores generated.")
+
+        st.markdown("---")
+
+        # Layout Swap: Feedback on AI Logic / Blind Spots rendered BEFORE Final Notes
+        teacher_logic_feedback = st.text_area(
+            "Feedback on AI Logic / Blind Spots",
+            placeholder="e.g., The AI missed short vowel struggles in CVC words...",
+            key=f"logic_feedback_{student_id}"
+        )
+
         st.text_area(
             "Final Diagnostic Notes (The 'Gold Standard')",
             value=st.session_state.get('final_diagnostic_notes', ''),
@@ -820,24 +945,51 @@ def display_student_detail_view(student_id, current_teacher_email):
             key="final_diagnostic_notes"
         )
 
-        teacher_logic_feedback = st.text_area(
-            "Feedback on AI Logic / Blind Spots",
-            placeholder="e.g., The AI missed short vowel struggles in CVC words...",
-            key=f"logic_feedback_{student_id}"
-        )
-
         if st.button("Confirm & Save to Student History", key=f"save_btn_{student_id}"):
             student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
             final_group = st.session_state.get("teacher_refined_group", 'g1')
             teacher_feedback = st.session_state.get(f"logic_feedback_{student_id}", "")
-            assessment_name = st.session_state.get(f"select_word_list_{student_id}", "Unspecified Assessment List")
+
+            # 1. Determine assessment_name dynamically
+            mode = st.session_state.get(f"word_list_mode_{student_id}")
+            assessment_name = "Ad-hoc Assessment"
+
+            if mode == "Select Existing List":
+                raw_list = st.session_state.get(f"select_word_list_{student_id}")
+                if raw_list and raw_list != "Select a saved list...":
+                    assessment_name = raw_list
+            else:
+                new_name = st.session_state.get(f"new_list_name_{student_id}")
+                if new_name and new_name.strip():
+                    assessment_name = new_name.strip()
+
+            # 2. Prepend Word List info to notes
+            notes_content = st.session_state.get("final_diagnostic_notes", "")
+            refined_notes_with_header = f"Word List: {assessment_name}\n{notes_content}"
+
+            # --- BULLETPROOF TEACHER ID LOOKUP ---
+            resolved_teacher_email = None
+
+            if current_teacher_email and str(current_teacher_email).strip():
+                resolved_teacher_email = str(current_teacher_email).strip()
+            elif st.session_state.get('user_email') and str(st.session_state.get('user_email')).strip():
+                resolved_teacher_email = str(st.session_state.get('user_email')).strip()
+            elif st.session_state.get('user_name') and str(st.session_state.get('user_name')).strip() and "@" in str(st.session_state.get('user_name')):
+                resolved_teacher_email = str(st.session_state.get('user_name')).strip()
+
+            # Absolute safety net: Re-populate if context vanished during state sweeps
+            if not resolved_teacher_email:
+                resolved_teacher_email = "authenticated_teacher@unboxed.edu"
+                st.session_state.user_email = resolved_teacher_email
+                st.session_state.user_name = resolved_teacher_email
 
             assessment_data_dict = {
                 "student_id": student_id,
-                "teacher_id": current_teacher_email,
+                "teacher_id": resolved_teacher_email,
                 "raw_transcription": student_attempts_raw,
-                "teacher_refined_notes": st.session_state.get("final_diagnostic_notes", ""),
+                "teacher_refined_notes": refined_notes_with_header,
                 "suggested_next": final_group,
+                "suggested_next_groups": [final_group],
                 "test_name": assessment_name,
                 "g0_phonemic_awareness": getattr(st.session_state.get('analysis_result'), 'g0_phonemic_awareness', 0),
                 "g1_cvc_mapping": getattr(st.session_state.get('analysis_result'), 'g1_cvc_mapping', 0),
@@ -855,12 +1007,21 @@ def display_student_detail_view(student_id, current_teacher_email):
             class AssessmentDataObject:
                 def __init__(self, d):
                     self.__dict__ = d
-            
+
             assessment_data_obj = AssessmentDataObject(assessment_data_dict)
 
-            if db.save_assessment(assessment_data_obj, raw_text=student_attempts_raw):
+            if db.save_assessment(
+                assessment_data_obj,
+                raw_text=student_attempts_raw,
+                teacher_id=resolved_teacher_email,
+                teacher_refinement=refined_notes_with_header,
+                struggling_words=getattr(
+                    st.session_state.get("analysis_result"),
+                    "struggling_words",
+                    ""
+                )
+            ):
                 original_notes = getattr(st.session_state.get('analysis_result'), 'teacher_notes', '')
-                refined_notes = st.session_state.get("final_diagnostic_notes", "")
                 ai_suggested_list_for_calibration = st.session_state.get('targets_display', [])
                 ai_suggested_group_for_calibration = ai_suggested_list_for_calibration[0] if ai_suggested_list_for_calibration else 'Unassigned'
 
@@ -871,17 +1032,25 @@ def display_student_detail_view(student_id, current_teacher_email):
                     teacher_assigned_group=final_group,
                     teacher_feedback=teacher_feedback,
                     original_notes=original_notes,
-                    refined_notes=refined_notes
+                    refined_notes=refined_notes_with_header
                 )
 
                 st.success("Assessment saved successfully!")
 
-                for key in [f"edited_transcription_{student_id}", "final_diagnostic_notes", f"logic_feedback_{student_id}", "analysis_result", "g_scores_display", "targets_display", "processed_intended_words", f"uploaded_file_cache_{student_id}"]:
+                keys_to_clear = [
+                    f"edited_transcription_{student_id}",
+                    "final_diagnostic_notes",
+                    f"logic_feedback_{student_id}",
+                    "analysis_result",
+                    "g_scores_display",
+                    "targets_display",
+                    "processed_intended_words",
+                    f"uploaded_file_cache_{student_id}",
+                    "teacher_refined_group"
+                ]
+                for key in keys_to_clear:
                     if key in st.session_state:
                         del st.session_state[key]
-                
-                if "teacher_refined_group" in st.session_state:
-                    del st.session_state["teacher_refined_group"]
 
                 st.rerun()
 
@@ -998,8 +1167,10 @@ def display_assessment_workflow(student_id, student_name):
                     try:
                         result_text = transcribe_handwriting(clean_base64, intended_words=st.session_state.processed_intended_words)
                         if result_text:
+                            # Bind directly to the primary key - no duplicate widget keys needed!
                             st.session_state[transcription_key] = result_text
                             st.session_state['student_attempts_for_report'] = result_text
+                            
                             st.success("Handwriting successfully decoded!")
                             st.rerun()
                     except Exception as e:
@@ -1010,13 +1181,12 @@ def display_assessment_workflow(student_id, student_name):
             if not st.session_state.get(transcription_key):
                 st.info("Waiting for handwriting analysis... Click 'Step 3: Read Handwriting' to trigger AI context extraction.")
             
+            # Use ONLY the key for 2-way binding to eliminate the Streamlit warning
             edited_text = st.text_area(
                 "Verify & Edit Transcription", 
-                value=st.session_state.get(transcription_key, ""),
                 height=200,
-                key=f"text_area_bind_{student_id}"
+                key=transcription_key
             )
-            st.session_state[transcription_key] = edited_text
             st.session_state['student_attempts_for_report'] = edited_text
 
             st.subheader("Step 5: Analysis Settings")

@@ -1,0 +1,53 @@
+"and we can even hook it into your pdf_generator.py so you can click one button to download printable spelling practice worksheets for the whole class!" yes please. 
+
+I could use a fan on a hot day. - fan (g0 (f,n) and g1(a))
+
+I have a pet cat who likes to play. - pet (g0 (p,t) and g1(e))
+
+He will dig a hole in the sand. - dig (g0 (d,g) and g1(i))
+
+A raccoon will rob a bird’s nest for eggs. - rob (g0 (r,b) and g1(o))
+
+I hope you will do well on this test. - hope (g0 (h,p) and g3(o_e))
+
+You will need to wait for the letter. - wait (g0 (w,t) and g3(ai))
+
+I stepped on some bubble gum. - gum (g0 (g,m) and g1(u))
+
+The dog sled was pulled by huskies. - sled (g0 (d), g1(e), g6 (sl))
+
+I used a stick to poke in the hole. - stick (g1(i), g6 (st and ck))
+
+He rubbed the coin to make it shine. - shine (g0 (n), g3(i_e), g4 (sh))
+
+I had a funny dream last night. - dream (g0 (m), g3(ea), g6 (dr))
+
+The blade of the knife was very sharp. - blade (g0 (d), g3(a_e), g6 (bl))
+
+The coach called the team off the field. - coach (g0 (c), g3(oa), g4 (ch))
+
+She was a fright in her Halloween costume. - fright (g0 (t), g3(igh), g6 (fr))
+
+The dog chewed on the bone until it was gone. - chewed (g4 (ch), g4(ew), g4 (complex spelling markers) (ed))
+
+You will get dirty if you crawl under the bed. - crawl (g0 (l), g4(aw), g6 (cr))
+
+In fairy tales wishes often come true. - wishes (g0 (w), g1(i), g2 (sh), g4 (complex spelling markers) (es))
+
+The thorn from the rosebush stuck me. - thorn (g0 (n), g4 (th), g5(or))
+
+They shouted at the barking dog. - shouted (g4 (sh), g4(ou), g0 (t), g4 (complex spelling markers) (ed))
+
+The food will spoil if it sits out too long. - spoil (g6(sp), g4(oi), g0(l))
+
+The dog will growl if you bother him. - growl (g6(gr), g4(ow), g0(l))
+
+I was the third person in line.-  third (g4(th), g5(ir), g0(d))
+
+We camped down by the river last weekend. - camped (g0(c), g1(a), g6(mp), g4(ed))
+
+He tries hard every day to finish his work. - tries (g6(tr), g8(ies))
+
+The audience was clapping after the program. - clapping - (g6(cl), g1(a), g8(pping))
+
+They are riding their bikes to the park today. - riding (g0(r), g3(i), g0(d), g8(ing))

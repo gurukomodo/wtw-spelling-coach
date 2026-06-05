@@ -12,3 +12,9 @@ google-generativeai
 reportlab
 qrcode[pil]
 svglib
+reportlab==4.1.0
+qrcode==7.4.2
+Pillow==10.2.0
+pyzbar==0.1.9
+opencv-python-headless==4.9.0.80
+svglib==1.5.1
