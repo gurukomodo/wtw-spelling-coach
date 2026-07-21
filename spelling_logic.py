@@ -1,20 +1,21 @@
 import os
+import json
 from dotenv import load_dotenv
 from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Dict, Any, Optional
 import google.genai as genai
 import streamlit as st
 from model_config import get_available_model, get_model_fallbacks, set_model_from_env
 from database_manager import get_latest_teacher_notes
 
-# Setup the API with correct configuration
+load_dotenv()
+
+# --- 0. API & MODEL INITIALIZATION ---
 api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
-# Configure SDK
 if api_key:
-    # Check if OTEL_SDK_DISABLED environment variable is set
     if os.environ.get("OTEL_SDK_DISABLED"):
         print("DEBUG: OTEL_SDK_DISABLED is set, skipping client initialization")
         client = None
@@ -25,50 +26,194 @@ else:
     print("ERROR: No GOOGLE_API_KEY found in st.secrets or environment variables")
     client = None
 
-# Use configurable model with fallback logic
+
 def initialize_model():
     """Initialize model with fallback logic."""
-    # Try environment override first
     model_name = set_model_from_env()
-    
     if model_name:
         try:
-            # New GenAI SDK uses client.generate_content() instead of GenerativeModel
-            return model_name  # Return model name for use with client
+            return model_name
         except Exception as e:
             st.warning(f"Model {model_name} not available: {e}")
     
-    # Try preferred models in order
     for fallback_model in get_model_fallbacks():
         try:
-            # New GenAI SDK uses client.generate_content() instead of GenerativeModel
-            return fallback_model  # Return model name for use with client
+            return fallback_model
         except Exception as e:
             continue
     
-    # If no models work, raise error
     raise Exception("No available Gemini models found")
 
-# Initialize model globally
+
 try:
     model = initialize_model()
 except Exception as e:
     print(f"ERROR: Failed to initialize Gemini model: {e}")
     model = None
 
+
+# --- 1. DYNAMIC WORD LIST LOGIC ---
+def get_target_words(file_name="primary_inventory.txt"):
+    folder_path = os.path.join("assessments", file_name)
+    try:
+        with open(folder_path, "r") as f:
+            words = [line.strip() for line in f.readlines() if line.strip()]
+            return ", ".join(words)
+    except FileNotFoundError:
+        return "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+
+CURRENT_TEST_WORDS = get_target_words()
+
+
+# --- 2. QUALITATIVE DIAGNOSIS DATA SCHEMA ---
+class DiagnosisResultSchema(BaseModel):
+    student_id: str = Field(default="The Student")
+    diagnostic_summary: str = Field(description="2-3 sentences explaining primary error trends and strengths")
+    phonetic_stage_level: str = Field(description="Developmental spelling stage level (e.g. Letter Name - Alphabetic)")
+    recommended_focus_areas: List[str] = Field(description="1-3 targeted linguistic areas for immediate focus")
+    coaching_tips: List[str] = Field(description="Actionable mini-lesson ideas or activities for the teacher")
+
+
+# --- 3. VISION TRANSCRIPTION (OCR) ---
+def transcribe_handwriting(base64_image, intended_words=None):
+    if intended_words and intended_words.strip():
+        words_for_prompt = intended_words
+    else:
+        words_for_prompt = get_target_words()
+
+    system_prompt = f"""..."""  # Your existing prompt
+
+    vision_models = [
+        "groq/llama-3.2-11b-vision-preview",
+        "groq/llama-3.2-90b-vision-preview",
+    ]
+
+    for model_name in vision_models:
+        try:
+            response = completion(
+                model=model_name,
+                messages=[...],  # Your existing message structure
+                temperature=0.0,
+            )
+
+            # Log successful call
+            db.log_model_event(
+                model_name, "success", action="transcribe_handwriting"
+            )
+            return response.choices[0].message.content
+
+        except Exception as e:
+            # Log error call
+            db.log_model_event(
+                model_name,
+                "error",
+                error_msg=e,
+                action="transcribe_handwriting",
+            )
+            print(f"[OCR Warning] Model '{model_name}' failed: {e}")
+            continue
+
+    raise RuntimeError("All configured OCR vision models failed.")
+
+# --- 4. QUALITATIVE AI DIAGNOSIS ENGINE ---
+def diagnose_errors(
+    student_id: str,
+    evaluation_result: Dict[str, Any],
+    analysis_complexity: str = "Standard"
+) -> Dict[str, Any]:
+    """
+    Consumes deterministic EvaluationResult output from feature_evaluator.py
+    and generates qualitative pedagogical coaching without recalculating raw scores.
+    """
+    # Fetch historical teacher notes for context
+    teacher_notes = None
+    try:
+        teacher_notes = get_latest_teacher_notes(student_id)
+    except Exception as e:
+        print(f"Notice: Could not retrieve teacher notes for {student_id}: {e}")
+
+    notes_context = f"\nPREVIOUS TEACHER NOTES FOR THIS STUDENT:\n{teacher_notes}\n" if teacher_notes else ""
+
+    total_score = evaluation_result.get("total_score", 0)
+    max_score = evaluation_result.get("max_score", 0)
+    word_evals = evaluation_result.get("word_evaluations", [])
+    feature_summary = evaluation_result.get("feature_summary", {})
+
+    word_details_formatted = []
+    for w in word_evals:
+        status = "CORRECT" if w.get("is_correct") else "INCORRECT"
+        missed = f" (Missed features: {w.get('missed_features')})" if w.get("missed_features") else ""
+        word_details_formatted.append(
+            f"- Intended: '{w.get('intended_word')}' | Attempt: '{w.get('student_attempt')}' | {status}{missed}"
+        )
+
+    word_details_str = "\n".join(word_details_formatted)
+    feature_summary_str = json.dumps(feature_summary, indent=2)
+
+    prompt = f"""
+You are an expert literacy specialist and reading coach evaluating a student's Primary Spelling Inventory (PSI) assessment.
+
+CRITICAL INSTRUCTION:
+Do NOT recalculate total scores or re-evaluate right/wrong answers. The deterministic evaluation engine has already scored this assessment.
+Focus strictly on qualitative pedagogical diagnosis, stage level placement, and teacher coaching recommendations.
+
+=== DETERMINISTIC EVALUATION DATA ===
+- Overall Score: {total_score} / {max_score}
+- Feature Summary (G0-G8 Performance Matrix):
+{feature_summary_str}
+
+- Word-by-Word Analysis:
+{word_details_str}
+{notes_context}
+ANALYSIS COMPLEXITY: {analysis_complexity}
+
+=== FORMATTING RULES ===
+- When referring to a SOUND (Phoneme), use slashes (e.g., /θ/, /d/, /st/).
+- When referring to a WRITTEN LETTER or PATTERN (Grapheme), use angle brackets (e.g., <th>, <ed>, <st>).
+
+Respond ONLY with a valid JSON object matching this structure:
+{{
+  "student_id": "{student_id}",
+  "diagnostic_summary": "2-3 sentence overview of error patterns, phonological vs orthographic issues, and strengths.",
+  "phonetic_stage_level": "Name of developmental spelling stage (Emergent, Letter Name - Alphabetic, Within Word Pattern, Syllables & Affixes, Derivational Relations)",
+  "recommended_focus_areas": ["Focus area 1", "Focus area 2"],
+  "coaching_tips": ["Actionable mini-lesson or classroom strategy 1", "Actionable strategy 2"]
+}}
+"""
+
+    try:
+        response = client.generate_content(model=model, contents=prompt)
+        raw_output = response.text.strip()
+
+        # Clean code blocks if present
+        if raw_output.startswith("```json"):
+            raw_output = raw_output.split("```json")[1].split("```")[0].strip()
+        elif raw_output.startswith("```"):
+            raw_output = raw_output.split("```")[1].split("```")[0].strip()
+
+        parsed_data = json.loads(raw_output)
+        return parsed_data
+
+    except Exception as e:
+        print(f"Error in diagnose_errors: {e}")
+        return {
+            "student_id": student_id,
+            "diagnostic_summary": f"Qualitative analysis unavailable due to an engine response error: {str(e)}",
+            "phonetic_stage_level": "Undetermined",
+            "recommended_focus_areas": [],
+            "coaching_tips": []
+        }
+
+
+# --- 5. HOLISTIC COACHING REPORT ---
 def get_ai_coaching_report(student_alias, g_level, history=None):
-    """
-    Sends holistic student history to Gemini and returns a coaching plan.
-    Reviews the provided history (ordered oldest to newest) to identify patterns.
-    """
-    # Build history context from list of assessments
+    """Sends holistic student history to Gemini and returns a coaching plan."""
     history_context = "No previous assessments."
     recent_context = ""
     
     if history and len(history) > 0:
         history_entries = []
         for i, entry in enumerate(history):
-            # entry format: dictionary with keys like 'test_date', 'created_at', 'g0_phonemic', etc.
             test_date = entry.get('created_at', f"Assessment {i+1}")
             g_scores = f"G0:{entry.get('g0_phonemic', 0)}%, G1:{entry.get('g1_cvc', 0)}%, G2:{entry.get('g2_digraphs', 0)}%, G3:{entry.get('g3_silent_e', 0)}%, G4:{entry.get('g4_vowel_teams', 0)}%, G5:{entry.get('g5_r_controlled', 0)}%, G6:{entry.get('g6_clusters', 0)}%, G7:{entry.get('g7_multisyllabic', 0)}%, G8:{entry.get('g8_reduction', 0)}%"
             struggles = entry.get('struggling_words', "")
@@ -90,7 +235,6 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
 
         history_context = "\n\n".join(history_entries)
         
-        # Recent context for priority weighting
         recent = history[-2:] if len(history) >= 2 else history
         recent_entries = []
         for entry in recent:
@@ -121,23 +265,16 @@ Current G-Level: {g_level}
 {recent_context}
 
 Based on this holistic review:
-1. Identify persistent phonetic struggles (patterns appearing across multiple assessments)
+1. Identify persistent phonetic struggles
 2. Note any improvements or regression
 3. Factor in teacher observations for context
 
 Provide a coaching report with:
 1. **Diagnostic Insight**: What phonetic patterns are they consistently missing?
-2. **Evidence Section (CRITICAL)**: For EACH G-Level you mention, you MUST provide specific evidence:
-   - List exact words from their assessment writing where they made errors (e.g., "wrote 'teem' instead of 'team'")
-   - If mentioning struggles from the Struggles field, quote the specific examples
-   - Format: "**Evidence for [G-Level Name]**: [specific word examples with their errors]"
-3. **Progress Analysis**: How has their trajectory changed over time?
-4. **Three Targeted Activities**: Specific practice for this week
-5. **Next Step Recommendation**: Clear direction for continued growth
-
-CRITICAL: You cannot claim a student struggles with a G-Level without providing specific word-level evidence from their assessment data or struggles field.
-
-Keep the tone professional, encouraging, and actionable.
+2. **Evidence Section (CRITICAL)**: Provide specific word-level evidence for each mentioned G-Level.
+3. **Progress Analysis**: Trajectory changes over time.
+4. **Three Targeted Activities**: Specific practice for this week.
+5. **Next Step Recommendation**: Clear direction for continued growth.
 """
     
     try:
@@ -145,726 +282,106 @@ Keep the tone professional, encouraging, and actionable.
         return response.text
     except Exception as e:
         return f"AI Coaching currently unavailable: {str(e)}"
-    
-load_dotenv()
 
-# --- 1. DYNAMIC WORD LIST LOGIC ---
-def get_target_words(file_name="primary_inventory.txt"):
-    folder_path = os.path.join("assessments", file_name)
-    try:
-        with open(folder_path, "r") as f:
-            words = [line.strip() for line in f.readlines() if line.strip()]
-            return ", ".join(words)
-    except FileNotFoundError:
-        return "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
 
-CURRENT_TEST_WORDS = get_target_words()
-
-# --- 2. DATA STRUCTURE ---
-''' This was the previous schema, it is not robust enough.
-class WTWScoreSchema(BaseModel):
-    student_name: str
-    words_correct: int
-    feature_points: int
-    total_score: int
-    spelling_stage: str
-    next_focus: str
-    short_explanation: str
-'''
-class AssessmentSchema(BaseModel):
-    student_name: str
-
-    # GROUP 0 — Phonemic Awareness
-    g0_phonemic_awareness: int = Field(description="Ability to perceive and manipulate phonemes (minimal pairs, segmentation, blending)")
-
-    # GROUP 1 — Basic CVC Mapping (phoneme ↔ grapheme)
-    g1_cvc_mapping: int = Field(description="Single consonant and short vowel mapping (CVC words)")
-
-    # GROUP 2 — Digraphs & Two-Letter Phonemes
-    g2_digraphs: int = Field(description="sh, ch, th, ng and related phoneme-grapheme mappings")
-
-    # GROUP 3 — Silent-e (VCe system)
-    g3_silent_e: int = Field(description="Long vowel patterns with silent-e (a_e, i_e, etc.)")
-
-    # GROUP 4 — Vowel Teams (multiple graphemes per phoneme)
-    g4_vowel_teams: int = Field(description="ee, ea, ai, oa, ou, oi, etc.")
-
-    # GROUP 5 — R-Controlled Vowels
-    g5_r_controlled: int = Field(description="ar, or, er, ir, ur patterns")
-
-    # GROUP 6 — Consonant Clusters & Complex Codas
-    g6_clusters: int = Field(description="Blends and complex consonant clusters (CCVC, CVCC, CCCVC)")
-
-    # GROUP 7 — Multisyllabic Words & Division
-    g7_multisyllabic: int = Field(description="Syllable types and division patterns (VC/CV, V/CV, VC/V)")
-
-    # GROUP 8 — Reduced Vowels, Stress & Morphology
-    g8_reduction_morphology: int = Field(description="Schwa, stress patterns, inflections, morphological changes")
-
-    # Flexible recommendation (NOT linear)
-    suggested_next_groups: List[str] = Field(
-        description="List of 1-3 groups that should be targeted next based on weakest areas and learning priority"
-    )
-
-    teacher_notes: str = Field(
-        description="Concise diagnostic summary including phonological vs orthographic issues"
-    )
-# --- 3. VISION TRANSCRIPTION ---
-def transcribe_handwriting(base64_image, intended_words=None):
-    # Use provided intended_words or fall back to default
-    if intended_words and intended_words.strip():
-        words_for_prompt = intended_words
-    else:
-        words_for_prompt = get_target_words() # Fallback to primary_inventory.txt
-
-    # This prompt forces the AI to be a 'dumb' camera, not a 'smart' assistant
-    system_prompt = f"""
-    ROLE: Literal OCR Transcriber for a spelling assessment.
-    TASK: Transcribe handwritten words from a student's spelling test.
-    
-    The intended target words the student was trying to write are: {words_for_prompt}
-    
-    STRICT RULES:
-    1. DO NOT CORRECT SPELLING. If you see 'h-u-p', write 'hup', even if the intended word is 'hope'.
-    2. LOOK AT THE SHAPES. If a letter is ambiguous, choose the one that matches the ink.
-    3. If a word is crossed out, ignore it.
-    4. If some lines are fainter than others, it could indicate that the student erased letters; ignore significantly fainter markings.
-    5. FORMAT: intended_word: student_attempt (e.g., fan: fan) - IMPORTANT: You MUST match the intended word to the attempt on the same line if possible. If you can't identify the intended word for an attempt, use "UNKNOWN: student_attempt".
-    """
-    
-    # Initialize GenAI client with new SDK structure
-    try:
-        client = genai.Client(api_key=api_key)
-        print("DEBUG: Using new google.genai client structure")
-    except Exception as e:
-        print(f"ERROR: Failed to initialize GenAI client: {e}")
-        client = None
-    
-    response = completion(
-        model="groq/meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=[
-            {
-                "role": "user", 
-                "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ],
-        temperature=0.0 # Keep this at 0.0 for zero creativity!
-    )
-    
-    # Terminal tracing: Output raw text from AI model
-    raw_result = response.choices[0].message.content
-    
-    return raw_result
-
-# --- 4. CREWAI AGENTS ---
-'''assessor = Agent(
-    role="WTW Spelling Assessor",
-    goal=f"Score student attempts against these targets: {CURRENT_TEST_WORDS}",
-    backstory="Expert Grade 2 teacher trained in Words Their Way scoring.",
-    llm="groq/llama-3.3-70b-versatile",
-    allow_delegation=False
-)'''
-assessor = Agent(
-    role="ESL Spelling and Phonology Assessor",
-    goal=f"""
-    Analyze student spelling attempts against the *provided target words*.
-    Explicitly compare the student's attempts to the *exact target words* given.
-    
-    Evaluate performance using a group-based system:
-    - g0_phonemic_awareness
-    - g1_cvc_mapping
-    - g2_digraphs
-    - g3_silent_e
-    - g4_vowel_teams
-    - g5_r_controlled
-    - g6_clusters
-    - g7_multisyllabic
-    - g8_reduction_morphology
-
-    Also identify key error patterns from a controlled list.
-    """,
-    
-    backstory="""
-    You are an expert ESL literacy assessor specializing in phonology (IPA-informed) 
-    and English orthography. You analyze spelling errors by distinguishing:
-
-    - phonological issues (sound perception/production)
-    - orthographic issues (spelling patterns)
-    - phonotactic issues (word structure constraints)
-
-    You understand common transfer issues for Mandarin L1 learners, including:
-    - difficulty with /ɪ/ vs /iː/
-    - absence of /θ/ and /ð/
-    - final consonant deletion
-    - lack of vowel reduction (schwa)
-
-    You do NOT use grade-level or native-speaker developmental assumptions.
-    You assess each linguistic feature independently.
-    """,
-    
-    llm="groq/llama-3.3-70b-versatile",
-    allow_delegation=False
-)
-''' This is the previous function, it is not robust enough.
-def run_scoring_crew(student_name, transcription_text):
-    task = Task(
-        description=f"""
-        Analyze these attempts for {student_name}:
-        {transcription_text}
-        
-        Compare them to: {CURRENT_TEST_WORDS}
-        Calculate: Words Correct (/26), Feature Points (/56), and Stage.
-        """,
-        agent=assessor,
-        expected_output="JSON assessment summary.",
-        output_json=WTWScoreSchema
-    )
-    crew = Crew(agents=[assessor], tasks=[task])
-    return crew.kickoff()
-    return result
-'''
-def preprocess_crew_output(raw_data):
-    """
-    Pre-processes crew output to convert 'NA' strings to 0 before Pydantic validation.
-    This prevents validation errors when the AI returns 'NA' for unassessed groups.
-    """
-    if not isinstance(raw_data, dict):
-        return raw_data
-    
-    # List of group score fields that might contain 'NA'
-    group_fields = [
-        'g0_phonemic_awareness', 'g1_cvc_mapping', 'g2_digraphs',
-        'g3_silent_e', 'g4_vowel_teams', 'g5_r_controlled',
-        'g6_clusters', 'g7_multisyllabic', 'g8_reduction_morphology'
-    ]
-    
-    processed_data = raw_data.copy()
-    for field in group_fields:
-        if field in processed_data:
-            value = processed_data[field]
-            # Convert 'NA', 'na', 'N/A', or any string to 0
-            if isinstance(value, str) and value.upper() in ['NA', 'N/A', 'NOT ASSESSED', '']:
-                processed_data[field] = 0
-            elif isinstance(value, str):
-                # Try to convert numeric strings to int
-                try:
-                    processed_data[field] = int(float(value))
-                except (ValueError, TypeError):
-                    processed_data[field] = 0
-    
-    return processed_data
-
-def run_scoring_crew(student_id, transcription_text, intended_words=None, shadow_data=None, analysis_complexity="Brief"):
-    """
-    Runs the AI scoring crew for a student's transcription.
-    PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
-
-    Args:
-        student_id: Internal student ID (never shown to AI)
-        transcription_text: The student's spelling attempts (empty for progress review mode)
-        intended_words: Optional comma-separated list of target words (from test template)
-        analysis_complexity: "Brief", "Standard", or "Detailed" analysis level
-    """
-    from database_manager import get_historical_corrections
-
-    # Use provided words or fall back to global default
-    target_words = intended_words if intended_words else CURRENT_TEST_WORDS
-
-    # PRIVACY: Always use 'The Student' alias in AI prompts
-    student_alias = "The Student"
-
-    # 0. GATHER MEMORY CONTEXT FROM HISTORICAL CORRECTIONS
-    historical_records = get_historical_corrections(student_id, limit=5)
-    memory_entries = []
-    for rec in historical_records:
-        entry_date = rec.get('created_at', 'Unknown Date')[:10]
-        orig = rec.get('original_transcription', 'N/A')
-        corr = rec.get('corrected_transcription', 'N/A')
-        memory_entries.append(f"[{entry_date}] Mistake: '{orig}' was corrected to: '{corr}'")
-
-    memory_context = "\n".join(memory_entries) if memory_entries else "No historical transcription corrections on record."
-
-    # Detect progress review mode (no new handwriting)
-    is_progress_review = not transcription_text or transcription_text.strip() == ""
-    
-    # 1. FETCH PREVIOUS FEEDBACK
-    past_feedback = get_latest_teacher_notes(student_id)
-    feedback_context = f"PREVIOUS TEACHER CORRECTIONS FOR {student_alias}: {past_feedback}" if past_feedback else ""
-    # 2. ADD SHADOW DATA CONTEXT (Contextual Evidence)
-    shadow_context = ""
-    if shadow_data:
-        shadow_observations = []
-        for entry in shadow_data:
-            shadow_observations.append(f"Daily misspelling ({entry['timestamp']}): '{entry['incorrect']}' instead of '{entry['intended']}'")
-
-        if shadow_observations:
-            if is_progress_review:
-                shadow_context = f"\n\nCONTEXTUAL EVIDENCE (Primary Data Source for Progress Review):\n" + "\n".join(shadow_observations) + "\n\nCRITICAL: This is a PROGRESS REVIEW based on classroom observations. Analyze these daily mistakes to determine if the student's current G-Level placement remains appropriate or if adjustment is needed."
-            else:
-                shadow_context = f"\n\nCONTEXTUAL EVIDENCE (Recent Daily Work):\n" + "\n".join(shadow_observations) + "\n\nCRITICAL: Use this real-world classroom data to VERIFY if the patterns you identify in the current assessment are CONSISTENT with the student's daily spelling mistakes. If a pattern appears in the assessment but NOT in their daily work, note this discrepancy."
-        else:
-            shadow_context = "\n\nNo recent daily observations available for contextual verification.\n"
-
-    # 2. DEFINE THE INSTRUCTIONS
-    if is_progress_review:
-        # Progress Review Mode - Analyze Google Sheet data against current G-Level
-        task_description = f"""
-{feedback_context}
-{shadow_context}
-
-PROGRESS REVIEW MODE: No new handwriting sample provided.
-Your task is to analyze the student's RECENT CLASSROOM OBSERVATIONS (Google Sheet data) to evaluate their current G-Level placement.
-
-STUDENT: {student_alias}
-
-The intended target words for previous assessments (if applicable) were: {target_words}.
-
-ANALYSIS FOCUS:
-1. Review the contextual evidence (daily misspellings) above
-2. Identify which linguistic groups (g0-g8) are represented in these errors
-3. Determine if the error patterns are consistent with their current G-Level
-4. Check for evidence of mastery or struggle in their current group
-5. Identify if they've developed new error patterns in higher groups (indicating readiness to advance)
-6. Identify if they're still struggling with patterns from lower groups (indicating need to step back)
-
-EVIDENCE REQUIREMENTS (CRITICAL):
-- For EACH G-Level you mention in your analysis, you MUST provide specific evidence from the Google Sheet data
-- Format: "**Evidence for [G-Level Name]**: [specific word examples with their errors]"
-- Example: "**Evidence for Vowel Teams (g4)**: Student wrote 'teem' instead of 'team', 'rain' instead of 'rein'"
-
-GROUP ALLOCATION RECOMMENDATION:
-Based SOLELY on the Google Sheet evidence, recommend whether to:
-- Keep current G-Level (if errors match current group patterns)
-- Advance to next G-Level (if showing mastery of current patterns and attempting higher-level words)
-- Step back to previous G-Level (if still struggling with lower-level patterns)
-
-STRICT RULES:
-- Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously
-  corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
-- Base ALL analysis on VISIBLE EVIDENCE in the Google Sheet data.
-- If no Google Sheet data is available, recommend keeping current placement and note insufficient data.
-
-FORMATTING RULES (CRITICAL):
-- When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
-- When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
-- Always provide at least TWO written examples from the data to prove an error pattern exists.
-
-SCORING FOR PROGRESS REVIEW:
-Since this is based on observational data rather than a controlled assessment, assign estimated scores (0-100%) based on the error frequency and complexity observed in the Google Sheet data.
-
-ANALYSIS COMPLEXITY: {analysis_complexity}
-- Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
-- Standard: Provide moderate detail with specific examples
-- Detailed: Provide deep phonological breakdown with extensive analysis
-
-CRITICAL: You MUST reply with a valid JSON object only.
-Follow this exact structure:
-
-Score Variables:
-score_0 = estimated mastery percentage for g0 based on observational data
-score_1 = estimated mastery percentage for g1 based on observational data
-score_2 = estimated mastery percentage for g2 based on observational data
-score_3 = estimated mastery percentage for g3 based on observational data
-score_4 = estimated mastery percentage for g4 based on observational data
-score_5 = estimated mastery percentage for g5 based on observational data
-score_6 = estimated mastery percentage for g6 based on observational data
-score_7 = estimated mastery percentage for g7 based on observational data
-score_8 = estimated mastery percentage for g8 based on observational data
-{{
-    "student_name": "The Student",
-    "g0_phonemic_awareness": score_0,
-    "g1_cvc_mapping": score_1,
-    "g2_digraphs": score_2,
-    "g3_silent_e": score_3,
-    "g4_vowel_teams": score_4,
-    "g5_r_controlled": score_5,
-    "g6_clusters": score_6,
-    "g7_multisyllabic": score_7,
-    "g8_reduction_morphology": score_8,
-    "suggested_next_groups": ["g1", "g2"],
-    "teacher_notes": "Your progress review analysis with specific evidence from Google Sheet data."
-}}
-
-Replace score_N with estimated percentage values (0-100) based on observational evidence.
-"""
-    else:
-        # Standard Assessment Mode
-        task_description = f"""
-{feedback_context}
-{shadow_context}
-
-Analyze the following spelling attempts for {student_alias}:
-{transcription_text}
-
-You are grading a spelling assessment. The intended target words the student was trying to write are: {target_words}.
-Compare the student's handwritten attempts directly against this target list to identify exact misspellings, omissions, and phonics feature substitutions.
-
-    STRICT RULES:
-- Refer back to 'PREVIOUS TEACHER CORRECTIONS'. If the teacher previously
-  corrected a hallucination (e.g. 'Stop assuming /θ/ issues'), DO NOT repeat that error in your notes.
-- Base all notes on VISIBLE EVIDENCE in the current transcription.
-- CRITICAL: Use 'CONTEXTUAL EVIDENCE' (daily classroom observations) to VERIFY your diagnostic patterns.
-  If you identify an error pattern in the assessment, check if it appears in their daily work.
-  If a pattern appears in the assessment but NOT in daily work, note this discrepancy.
-  If a pattern appears consistently in both, this strengthens your diagnostic confidence.
-
-FORMATTING RULES (CRITICAL):
-- When referring to a SOUND (Phoneme), you MUST use slashes (e.g., /θ/, /d/, /st/).
-- When referring to a written LETTER or PATTERN (Grapheme), you MUST use angle brackets (e.g., <th>, <ed>, <st>).
-- Always provide at least TWO written examples from the student's attempts to prove an error pattern exists.
-
-INSTRUCTIONS:
-Evaluate mastery (0–100%) across linguistic groups (g0 through g8).
-- Distinguish phonological errors (sound perception/production) from orthographic errors (spelling pattern mistakes)
-- Pay CLOSE attention to Group 6 (Clusters/Blends). For Mandarin L1 speakers, look for:
-    * Omitted letters in consonant blends (e.g., writing 'sed' instead of 'sled' or 'sik' instead of 'stick').
-    * Extra vowels inserted in blends (e.g., 'seled' for 'sled').
-- Consider other ESL-specific issues (Mandarin L1 transfer):
-    * Difficulty with /θ/, /ð/, /ɹ/, /ɪ/
-    * Final consonant omission
-    * Vowel reduction absence
-- A student may be strong in some higher groups while weak in earlier ones
-
-CRITICAL RULE: Do NOT use clinical speech therapy terms like "consonant cluster reduction" or "phonological processes." This is a spelling assessment, not a speech assessment. Focus purely on whether the student heard the sounds (listening) and whether they mapped them to the correct letters (spelling). If a student misses a letter in a blend, call it an "omitted letter in a consonant blend." Keep your analysis strictly educational and focused on written orthography.
-
-SCORING CRITICAL: For each group level (g0-g8), you MUST check if the student attempted any words from that group in their transcription. If NO words from a specific group were attempted, you MUST assign 0 (zero) instead of a numerical score. Only assign percentage scores (0-100) for groups where the student actually attempted words. NEVER use "NA" or any non-numeric values.
-
-ANALYSIS COMPLEXITY: {analysis_complexity}
-- Brief: Provide a 2-3 sentence pedagogical summary in teacher_notes
-- Standard: Provide moderate detail with specific examples
-- Detailed: Provide deep phonological breakdown with extensive analysis
-
-CRITICAL: You MUST reply with a valid JSON object only.
-Follow this exact structure:
-
-Score Variables:
-score_0 = mastery percentage for g0 (0-100) OR 0 if no g0 words attempted
-score_1 = mastery percentage for g1 (0-100) OR 0 if no g1 words attempted
-score_2 = mastery percentage for g2 (0-100) OR 0 if no g2 words attempted
-score_3 = mastery percentage for g3 (0-100) OR 0 if no g3 words attempted
-score_4 = mastery percentage for g4 (0-100) OR 0 if no g4 words attempted
-score_5 = mastery percentage for g5 (0-100) OR 0 if no g5 words attempted
-score_6 = mastery percentage for g6 (0-100) OR 0 if no g6 words attempted
-score_7 = mastery percentage for g7 (0-100) OR 0 if no g7 words attempted
-score_8 = mastery percentage for g8 (0-100) OR 0 if no g8 words attempted
-{{
-    "student_name": "The Student",
-    "g0_phonemic_awareness": score_0,
-    "g1_cvc_mapping": score_1,
-    "g2_digraphs": score_2,
-    "g3_silent_e": score_3,
-    "g4_vowel_teams": score_4,
-    "g5_r_controlled": score_5,
-    "g6_clusters": score_6,
-    "g7_multisyllabic": score_7,
-    "g8_reduction_morphology": score_8,
-    "suggested_next_groups": ["g1", "g2"],
-    "teacher_notes": "Your analysis text goes here."
-}}
-
-Replace score_N with actual percentage values (0-100).
-"""
-
-    task = Task(
-        description=task_description,
-        agent=assessor,
-        expected_output="JSON group-based linguistic assessment.",
-        output_json=AssessmentSchema
-    )
-
-    # 3. KICK OFF THE CREW SAFELY
-    crew = Crew(agents=[assessor], tasks=[task])
-    
-    try:
-        crew_output = crew.kickoff()
-        
-        # Robust JSON extraction from CrewOutput
-        raw_output = crew_output.raw if hasattr(crew_output, 'raw') else str(crew_output)
-        raw_output = raw_output.strip()
-
-        # Clean out markdown code blocks if the AI wrapped the JSON
-        if raw_output.startswith("```json"):
-            raw_output = raw_output.split("```json")[1].split("```")[0].strip()
-        elif raw_output.startswith("```"):
-            raw_output = raw_output.split("```")[1].split("```")[0].strip()
-
-        import json
-        try:
-            parsed_data = json.loads(raw_output)
-            # Pre-process to convert 'NA' strings to 0
-            processed_data = preprocess_crew_output(parsed_data)
-            # Create AssessmentSchema object from processed data
-            return AssessmentSchema(**processed_data)
-
-        except json.JSONDecodeError as e:
-            print(f"CRITICAL: Raw output was not valid JSON. Falling back to regex extraction. Raw: {raw_output}")
-            # Simple fallback to grab whatever text was returned if structure broke
-            # Attempt to find some text for teacher_notes if JSON failed entirely
-            fallback_notes = raw_output if len(raw_output) > 20 else f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually."
-            
-            return AssessmentSchema(
-                student_name="The Student",
-                teacher_notes=fallback_notes,
-                suggested_next_groups=["g1"],
-                g0_phonemic_awareness=0, g1_cvc_mapping=0, g2_digraphs=0,
-                g3_silent_e=0, g4_vowel_teams=0, g5_r_controlled=0,
-                g6_clusters=0, g7_multisyllabic=0, g8_reduction_morphology=0
-            )
-        
-    except Exception as e:
-        print(f"Crew execution error in run_scoring_crew: {e}")
-        # Return a robust pydantic object so app.py doesn't crash
-        return AssessmentSchema(
-            student_name="The Student",
-            teacher_notes=f"Notice: The analysis failed to complete automatically (Error: {e}). Please score manually.",
-            suggested_next_groups=[],
-            g0_phonemic_awareness=0, g1_cvc_mapping=0, g2_digraphs=0,
-            g3_silent_e=0, g4_vowel_teams=0, g5_r_controlled=0,
-            g6_clusters=0, g7_multisyllabic=0, g8_reduction_morphology=0
-        )
-
-# --- 5. PERSONALIZED WORD GENERATION ---
-# Agent for generating personalized practice words
+# --- 6. PERSONALIZED PRACTICE WORD GENERATION ---
 word_generator = Agent(
     role="Personalized Spelling Word Selector",
     goal="Generate 10 highly targeted spelling words for a specific student based on their G-level and struggle areas",
-    backstory="""
-    You are an expert literacy specialist who creates personalized word lists for spelling practice.
-    You understand the Words Their Way (WTW) diagnostic groups and how to create effective practice lists.
-    
-    You understand:
-    - G0: Phonemic Awareness (sound manipulation)
-    - G1: Basic CVC Mapping (consonant-short vowel-consonant)
-    - G2: Digraphs (sh, ch, th, ng)
-    - G3: Silent-e (magic e, VCe patterns)
-    - G4: Vowel Teams (ee, ea, ai, oa, ou, oi, etc.)
-    - G5: R-Controlled Vowels (ar, or, er, ir, ur)
-    - G6: Consonant Clusters/Blends (CCVC, CVCC words)
-    - G7: Multisyllabic Words (syllable division)
-    - G8: Reduction & Morphology (schwa, -ed, -ing, etc.)
-    
-    You specialize in ESL/Mandarin L1 learners who have specific phonological and orthographic challenges.
-    """,
+    backstory="You are an expert literacy specialist creating targeted practice lists for ESL/Mandarin L1 learners.",
     llm="groq/llama-3.3-70b-versatile",
     allow_delegation=False
 )
 
-def generate_personalized_practice_words(student_id, target_group, teacher_notes, struggling_words, mastered_words="", unit_description="", custom_words_input=None):
-    """
-    Uses AI to generate 10 personalized spelling words based on:
-    - Unit Description (global class focus)
-    - Target G-level (e.g., G4 Vowel Teams)
-    - Teacher's refinement notes (student's background/struggles)
-    - struggling_words (in 'Correct:Attempt' format) to identify phonetic weaknesses
-    - mastered_words (list of words student consistently spells correctly)
-    - Custom words input by teacher
-    
-    PRIVACY: Uses 'The Student' alias instead of real name in all AI prompts.
-    
-    Args:
-        student_id: Internal student ID (never shown to AI)
-        target_group: Primary G-level to target (e.g., "g4")
-        teacher_notes: Teacher's refinement notes with background/struggles
-        struggling_words: Words student has struggled with before ('Correct:Attempt' format)
-        mastered_words: Words the student has already mastered
-        unit_description: The overall unit or theme for the whole class
-        custom_words_input: Optional comma-separated string of words teacher wants included
-    
-    Returns:
-        List of 10 personalized words, or fallback list if AI fails
-    """
-    
-    # PRIVACY: Always use 'The Student' alias in AI prompts
+
+def generate_personalized_practice_words(
+    student_id, target_group, teacher_notes, struggling_words, 
+    mastered_words="", unit_description="", custom_words_input=None
+):
     student_alias = "The Student"
     
-    # Group descriptions and patterns
     GROUP_INFO = {
-        "g0": {
-            "name": "Phonemic Awareness",
-            "patterns": "sound segmentation, blending, minimal pairs, phoneme manipulation",
-            "examples": "bat-pat, fan-fan, cat-cut"
-        },
-        "g1": {
-            "name": "Basic CVC Mapping",
-            "patterns": "single consonants and short vowels (CVC words)",
-            "examples": "cat, bed, sit, run, hop, map"
-        },
-        "g2": {
-            "name": "Digraphs",
-            "patterns": "sh, ch, th, ng",
-            "examples": "shop, chip, thin, ring, chin, ship"
-        },
-        "g3": {
-            "name": "Silent-e",
-            "patterns": "a_e, i_e, o_e, u_e (long vowel with silent e)",
-            "examples": "make, bike, hope, cute, cake, side"
-        },
-        "g4": {
-            "name": "Vowel Teams",
-            "patterns": "ee, ea, ai, oa, ou, oi, ay, ey patterns",
-            "examples": "see, sea, rain, boat, sound, coin, day, they"
-        },
-        "g5": {
-            "name": "R-Controlled Vowels",
-            "patterns": "ar, or, er, ir, ur",
-            "examples": "car, fork, her, bird, turn, star, form"
-        },
-        "g6": {
-            "name": "Consonant Clusters/Blends",
-            "patterns": "initial blends (bl, cl, fl, gl, pl, br, cr, dr, fr, gr, pr, tr, st, sk, sl, sw), final clusters",
-            "examples": "sled, stick, swim, dress, crash, plant, sleep"
-        },
-        "g7": {
-            "name": "Multisyllabic Words",
-            "patterns": "compound words, syllable division (VC/CV, V/CV)",
-            "examples": "rainbow, sunshine, basket, pencil, computer"
-        },
-        "g8": {
-            "name": "Reduction & Morphology",
-            "patterns": "schwa, -ed, -ing, -s, -es, prefixes, suffixes",
-            "examples": "walked, jumping, cats, boxes, unhappy, quickly"
-        }
+        "g0": {"name": "Phonemic Awareness", "patterns": "sound segmentation, blending", "examples": "bat-pat, cat-cut"},
+        "g1": {"name": "Basic CVC Mapping", "patterns": "single consonants and short vowels", "examples": "cat, bed, sit"},
+        "g2": {"name": "Digraphs", "patterns": "sh, ch, th, ng", "examples": "shop, chip, thin"},
+        "g3": {"name": "Silent-e", "patterns": "a_e, i_e, o_e, u_e", "examples": "make, bike, hope"},
+        "g4": {"name": "Vowel Teams", "patterns": "ee, ea, ai, oa, ou, oi", "examples": "see, rain, boat"},
+        "g5": {"name": "R-Controlled Vowels", "patterns": "ar, or, er, ir, ur", "examples": "car, fork, her"},
+        "g6": {"name": "Consonant Clusters/Blends", "patterns": "initial/final blends", "examples": "sled, stick, swim"},
+        "g7": {"name": "Multisyllabic Words", "patterns": "syllable division", "examples": "rainbow, sunshine"},
+        "g8": {"name": "Reduction & Morphology", "patterns": "schwa, -ed, -ing, suffixes", "examples": "walked, jumping"}
     }
     
     group_key = target_group.lower().strip()
     group_info = GROUP_INFO.get(group_key, GROUP_INFO["g1"])
     
-    # Build context for the AI
-    custom_words_context = f"\n\nTEACHER REQUESTED CUSTOM WORDS (must include these):\n{custom_words_input}" if custom_words_input else ""
-    
-    struggling_context = f"\n\nWORDS STUDENT HAS STRUGGLED WITH (Correct:Attempt format):\n{struggling_words}" if struggling_words else "\n\n(No previous struggling words found in records.)"
-    
-    mastered_context = f"\n\nWORDS STUDENT HAS MASTERED (Spelled Correctly):\n{mastered_words}" if mastered_words else "\n\n(No mastered words provided.)"
-    
-    notes_context = f"\n\nTEACHER NOTES (Student Background & Struggles):\n{teacher_notes}" if teacher_notes else "\n\n(No teacher notes available.)"
-    
-    unit_context = f"\n\nGLOBAL UNIT DESCRIPTION: {unit_description}" if unit_description else "\n\n(No global unit description provided.)"
+    custom_words_context = f"\nTEACHER CUSTOM WORDS: {custom_words_input}" if custom_words_input else ""
+    struggling_context = f"\nSTRUGGLING WORDS: {struggling_words}" if struggling_words else ""
+    mastered_context = f"\nMASTERED WORDS: {mastered_words}" if mastered_words else ""
+    notes_context = f"\nTEACHER NOTES: {teacher_notes}" if teacher_notes else ""
+    unit_context = f"\nUNIT DESCRIPTION: {unit_description}" if unit_description else ""
     
     task_description = f"""
-You are creating a personalized 10-word spelling practice list for a student.
+Create a 10-word practice list for {student_alias}.
+Target: {target_group.upper()} - {group_info['name']}
+Patterns: {group_info['patterns']}
+{notes_context}{struggling_context}{mastered_context}{unit_context}{custom_words_context}
 
-STUDENT: {student_alias}
-
-TARGET G-LEVEL: {target_group.upper()} - {group_info['name']}
-Phonetic Patterns to Practice: {group_info['patterns']}
-Example Patterns: {group_info['examples']}{notes_context}{struggling_context}{mastered_context}{unit_context}{custom_words_context}
-
-TASK:
-1. FIND THE LEARNING FRONTIER: Compare the 'Mastered Words' list against the 'Correct:Attempt' (struggles) list. Identify the exact point where the student's accuracy drops. This is the 'Frontier' of their learning.
-2. ANALYZE PHONETIC WEAKNESSES: Closely examine the 'Correct:Attempt' list to identify specific phonetic gaps (e.g., if they spell 'ship' as 'sip', the gap is the <sh> digraph).
-3. GENERATE 10 WORDS: Create a list of 10 spelling words that:
-    - Target the 'Frontier': Focus on patterns just beyond what they have mastered but aligned with their current struggles.
-    - Directly target the identified phonetic weaknesses.
-    - Align with the {group_info['name']} target patterns.
-    - CONTEXT: Incorporate the Global Unit Description to theme the words.
-    - PROGRESSION: Progress from the edge of their mastery to more challenging words.
-    - Include 2-3 words from their previous struggles for reinforcement.
-    - If custom words were requested, include those.
-
-IMPORTANT:
-- Focus on real, common words.
-- Ensure the words are not too easy (already mastered) nor too hard (completely out of reach). Target the Frontier.
-- Theme the words creatively based on the Unit Description while ensuring they accurately target the phonetic pattern.
-
-FORMAT:
-Return ONLY a valid JSON array of 10 words, nothing else.
-Example: ["word1", "word2", "word3", "word4", "word5", "word6", "word7", "word8", "word9", "word10"]
+Return ONLY a valid JSON array of 10 strings: ["word1", "word2", ..., "word10"]
 """
     
     task = Task(
         description=task_description,
         agent=word_generator,
-        expected_output="A JSON array of exactly 10 personalized spelling words"
+        expected_output="JSON array of 10 spelling words"
     )
     
     crew = Crew(agents=[word_generator], tasks=[task])
     
     try:
         crew_output = crew.kickoff()
-        
-        # Try to parse the JSON response
-        import json
         output_text = str(crew_output)
         
-        # Look for JSON array in the response
         import re
         json_match = re.search(r'\[.*?\]', output_text, re.DOTALL)
-        
         if json_match:
             words = json.loads(json_match.group(0))
             if isinstance(words, list) and len(words) >= 1:
-                return words[:10]  # Return max 10 words
+                return words[:10]
         
-        # Fallback: try to extract words another way
-        # Remove brackets and split by comma, then clean up
         cleaned = output_text.strip('[]').replace('"', '').replace("'", '')
         words = [w.strip() for w in cleaned.split(',') if w.strip()]
-        if words:
-            return words[:10]
-        
-        # If all parsing fails, return fallback
-        return get_fallback_words(group_key)
+        return words[:10] if words else get_fallback_words(group_key)
         
     except Exception as e:
         print(f"Word generation error: {e}")
         return get_fallback_words(group_key)
 
+
+# --- 7. DISCREPANCY & REFLECTION FEEDBACK ---
 def get_ai_discrepancy_feedback(ai_analysis_context, teacher_correction_context, teacher_group_context, teacher_direct_feedback):
-    """
-    Prompts the AI to analyze its own diagnostic errors based on teacher feedback.
-    """
     prompt = f"""
-    You are an AI diagnostic system reflecting on your own performance.
-    
-    Here is your ORIGINAL ANALYSIS:
-    {ai_analysis_context}
+You are an AI diagnostic system reflecting on your own performance.
+ORIGINAL ANALYSIS: {ai_analysis_context}
+TEACHER CORRECTION: {teacher_correction_context}
+TEACHER GROUP ASSIGNMENT: {teacher_group_context}
+TEACHER DIRECT FEEDBACK: {teacher_direct_feedback if teacher_direct_feedback else "None"}
 
-    Here is the TEACHER'S FINAL CORRECTION/REFINEMENT:
-    {teacher_correction_context}
-
-    Here is the TEACHER'S GROUP ASSIGNMENT vs. your SUGGESTION:
-    {teacher_group_context}
-
-    Here is ADDITIONAL DIRECT FEEDBACK from the teacher (if provided):
-    {teacher_direct_feedback if teacher_direct_feedback else "No direct feedback provided."}
-
-    Your task is to identify the underlying *perceptual or diagnostic error* you made in your original analysis.
-    
-    Consider:
-    - Did you mistake a specific error pattern?
-    - Did you misinterpret the student's mastery of a G-level?
-    - Did you miss a significant error category?
-    - Was there a nuance in the student's writing or the context that you overlooked?
-    
-    Define the specific diagnostic error you made in 1-2 concise sentences.
-    Focus on *your* diagnostic process and where it diverged from the teacher's expert assessment.
-    
-    Example: "I mistook the omission of final consonants as a CVC mastery issue, overlooking the broader phonemic awareness challenge."
-    Example: "I overemphasized a single error type, leading to an incorrect group suggestion, rather than balancing all evidence."
-    Example: "My analysis lacked specific word-level evidence for G4, making my suggestion less convincing to the teacher."
-    
-    CRITICAL: Respond ONLY with the 1-2 sentence description of your diagnostic error. Do not elaborate or provide solutions.
-    """
-    
+Define your specific diagnostic error in 1-2 concise sentences.
+Focus on where your diagnostic process diverged from the teacher's assessment.
+"""
     try:
         response = completion(
-            model="groq/llama-3.3-70b-versatile", # Use a reliable model for self-reflection
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2 # Allow slight creativity for nuanced feedback
+            model="groq/llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error generating AI discrepancy feedback: {e}")
         return f"AI self-reflection failed: {str(e)}"
 
 
 def get_fallback_words(target_group):
-    """Fallback word lists if AI generation fails."""
     fallback_by_group = {
         "g0": ["bat", "pat", "cat", "mat", "sat", "hat", "rat", "fat", "vat", "zat"],
         "g1": ["cat", "bed", "sit", "run", "hop", "map", "red", "big", "sun", "cup"],
