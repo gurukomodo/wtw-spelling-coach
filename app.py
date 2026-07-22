@@ -9,6 +9,8 @@ import time
 import base64
 import database_manager as db
 from datetime import datetime
+import feature_evaluator
+import spelling_logic
 
 from utils import preprocess_image
 from spelling_logic import get_ai_discrepancy_feedback, transcribe_handwriting, generate_personalized_practice_words
@@ -793,7 +795,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     # -----------------------------------------------------------------------------
     # STAGE 1 & 2 PIPELINE RUNNER BUTTON
     # -----------------------------------------------------------------------------
-    st.subheader("Run Diagnosis")
+    st.subheader("Run Automated Formative Analytics")
     
     col_opt1, col_opt2 = st.columns([2, 1])
     with col_opt1:
@@ -811,61 +813,49 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
 
     if run_pipeline:
         if not st.session_state.get('student_attempts_for_report'):
-            st.warning("Please upload and transcribe student handwriting before running the pipeline.")
+            st.warning("Please upload and transcribe student handwriting before running analytics.")
         else:
             intended_words_for_analysis = st.session_state.get("processed_intended_words") or "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
             attempts_text = st.session_state['student_attempts_for_report']
 
             # --- STAGE 1: EVALUATOR (DETERMINISTIC scoring against PSI_WORD_BANK) ---
-            with st.spinner("Phase 1/2: Deterministic Evaluator Scoring against PSI blueprint..."):
+            with st.spinner("Phase 1/2: Granular Orthographic Analysis"):
                 evaluator_output = None
                 if evaluate_spelling_attempt:
                     try:
-                        evaluator_output = evaluate_spelling_attempt(attempts_text, intended_words_for_analysis)
+                        # Added student_id as the first argument
+                        evaluator_output = evaluate_spelling_attempt(
+                            student_id, 
+                            attempts_text, 
+                            intended_words_for_analysis
+                        )
                     except Exception as eval_err:
                         st.warning(f"Feature evaluator module note: {eval_err}")
 
                 st.session_state.evaluator_result = evaluator_output
 
-            # --- STAGE 2: LOGIC (QUALITATIVE AI DIAGNOSTIC ENGINE) ---
-            with st.spinner("Phase 2/2: Logic Engine Analyzing Error Patterns & Pedagogical Notes..."):
+            # --- STAGE 2: LOGIC ---
+            with st.spinner("Phase 2/2: Prescriptive Learning Analytics"):
                 try:
-                    shadow_data = st.session_state.get(classroom_data_key, [])
-                    analysis_result = run_scoring_crew(
-                        student_id,
-                        attempts_text,
+                    # Safely get assessment_id if it exists, otherwise default to None
+                    current_assessment_id = locals().get('assessment_id') or st.session_state.get('assessment_id', None)
+
+                    analysis_result = spelling_logic.process_full_assessment(
+                        student_id=student_id,
+                        assessment_id=current_assessment_id,
+                        transcriptions=attempts_text,
                         intended_words=intended_words_for_analysis,
-                        shadow_data=shadow_data,
-                        analysis_complexity=analysis_complexity
+                        evaluator_result=evaluator_output
                     )
-                    
-                    st.session_state.final_diagnostic_notes = getattr(analysis_result, 'teacher_notes', 'No notes compiled.')
-                    st.session_state.analysis_result = analysis_result
-                    
-                    st.session_state.g_scores_display = {
-                        'g0': getattr(analysis_result, 'g0_phonemic_awareness', 0),
-                        'g1': getattr(analysis_result, 'g1_cvc_mapping', 0),
-                        'g2': getattr(analysis_result, 'g2_digraphs', 0),
-                        'g3': getattr(analysis_result, 'g3_silent_e', 0),
-                        'g4': getattr(analysis_result, 'g4_vowel_teams', 0),
-                        'g5': getattr(analysis_result, 'g5_r_controlled', 0),
-                        'g6': getattr(analysis_result, 'g6_clusters', 0),
-                        'g7': getattr(analysis_result, 'g7_multisyllabic', 0),
-                        'g8': getattr(analysis_result, 'g8_reduction_morphology', 0)
-                    }
-                    st.session_state.targets_display = getattr(analysis_result, 'suggested_next_groups', [])
-                    
-                    st.success("Pipeline evaluation complete!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Logic Engine Execution Failed: {e}")
+                except Exception as logic_err:
+                    st.error(f"Logic Engine Execution Failed: {logic_err}")
 
     # -----------------------------------------------------------------------------
     # STAGE 3: DISPLAY (DIAGNOSTIC VISUAL MATRIX & COMPARISON)
     # -----------------------------------------------------------------------------
     if st.session_state.get("analysis_result") or st.session_state.get("evaluator_result"):
         st.markdown("---")
-        st.subheader("Stage 3: Display (Diagnostic Insights & Feature Matrix)")
+        st.subheader("Stage 3: Display (Diagnostic Insights)")
 
         col_disp1, col_disp2 = st.columns([1, 1])
 

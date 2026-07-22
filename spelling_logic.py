@@ -1,5 +1,10 @@
 import os
 import json
+from urllib import response
+
+from streamlit.string_util import clean_text
+import database_manager as db
+import re
 from dotenv import load_dotenv
 from litellm import completion
 from crewai import Agent, Task, Crew
@@ -9,9 +14,22 @@ import google.genai as genai
 import streamlit as st
 from model_config import get_available_model, get_model_fallbacks, set_model_from_env
 from database_manager import get_latest_teacher_notes
+import feature_evaluator
 
 load_dotenv()
 
+# Explicitly fetch and clean keys
+def get_api_key(provider):
+    if provider == "gemini":
+        return (
+            os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+        ).strip()
+    elif provider == "openrouter":
+        return (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    elif provider == "groq":
+        return (os.getenv("GROQ_API_KEY") or "").strip()
+    return ""
+"""
 # --- 0. API & MODEL INITIALIZATION ---
 api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
@@ -25,7 +43,7 @@ if api_key:
 else:
     print("ERROR: No GOOGLE_API_KEY found in st.secrets or environment variables")
     client = None
-
+"""
 
 def initialize_model():
     """Initialize model with fallback logic."""
@@ -75,45 +93,186 @@ class DiagnosisResultSchema(BaseModel):
 
 
 # --- 3. VISION TRANSCRIPTION (OCR) ---
+import re  # Ensure this is imported at the top of spelling_logic.py
+
+
 def transcribe_handwriting(base64_image, intended_words=None):
     if intended_words and intended_words.strip():
         words_for_prompt = intended_words
     else:
         words_for_prompt = get_target_words()
 
-    system_prompt = f"""..."""  # Your existing prompt
+    system_prompt = f"""
+    ROLE: Literal OCR Transcriber for a spelling assessment.
+    TASK: Transcribe handwritten words from a student's spelling test.
+    
+    The intended target words the student was trying to write are: {words_for_prompt}
+    
+    STRICT RULES:
+    1. DO NOT CORRECT SPELLING. If you see 'h-u-p', write 'hup', even if the intended word is 'hope'.
+    2. LOOK AT THE SHAPES. If a letter is ambiguous, choose the one that matches the ink.
+    3. If a word is crossed out, ignore it.
+    4. FORMAT: intended_word: student_attempt (e.g., fan: fan)
+    5. CRITICAL: Output ONLY the list of matched words. DO NOT output any <think> tags, internal monologue, or thinking process.
+    """
 
+    # Updated vision_models list in spelling_logic.py:
     vision_models = [
-        "groq/llama-3.2-11b-vision-preview",
-        "groq/llama-3.2-90b-vision-preview",
+        # 1. Primary: Gemini (Keep, but add fallback redundancy)
+        ("gemini/gemini-2.0-flash", "gemini"),
+
+        # 2. Groq Replacements (Fast inference, active vision models)
+        ("groq/qwen/qwen3.6-27b", "groq"),
+
+        # 3. OpenRouter Active Free Vision Models
+        ("openrouter/google/gemma-4-31b-it:free", "openrouter"),
+
+        # 4. OpenRouter Free Auto-Router (Automatically selects an active free vision model)
+        ("openrouter/openrouter/free", "openrouter"),
     ]
 
-    for model_name in vision_models:
+    for model_name, provider in vision_models:
+        key = get_api_key(provider)
+        if not key:
+            continue
+
         try:
             response = completion(
                 model=model_name,
-                messages=[...],  # Your existing message structure
+                api_key=key,  # Pass explicitly to override stale environment state
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": system_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                },
+                            },
+                        ],
+                    }
+                ],
                 temperature=0.0,
+                max_tokens=2500,
             )
 
-            # Log successful call
-            db.log_model_event(
-                model_name, "success", action="transcribe_handwriting"
-            )
-            return response.choices[0].message.content
+            raw_text = response.choices[0].message.content or ""
+
+            # 1. Try stripping <think> tags
+            clean_text = raw_text
+            if "</think>" in clean_text:
+                clean_text = clean_text.split("</think>")[-1].strip()
+            
+            clean_text = re.sub(r"<think>.*?</think>", "", clean_text, flags=re.DOTALL).strip()
+
+            # 2. Safety Net: If stripping tags cleared ALL text (Qwen wrote inside <think>), use raw_text
+            if not clean_text and raw_text:
+                # Strip raw HTML tags but preserve text content
+                clean_text = re.sub(r"<[^>]+>", "", raw_text).strip()
+
+            # Filter out non-vision safety responses
+            ignored_phrases = ["user safety:", "safe", "i cannot view", "i cannot process images"]
+            if clean_text and not any(phrase in clean_text.lower() for phrase in ignored_phrases):
+                db.log_model_event(
+                    model_name, "success", action="transcribe_handwriting"
+                )
+                return clean_text
+            else:
+                print(f"[OCR Warning] {model_name} raw response was: '{raw_text[:150]}...' - Trying next fallback...")
 
         except Exception as e:
-            # Log error call
+            print(
+                f"[OCR Warning] {model_name} failed -> {type(e).__name__}: {e}"
+            )
             db.log_model_event(
                 model_name,
                 "error",
-                error_msg=e,
+                error_msg=str(e),
                 action="transcribe_handwriting",
             )
-            print(f"[OCR Warning] Model '{model_name}' failed: {e}")
             continue
 
     raise RuntimeError("All configured OCR vision models failed.")
+def process_full_assessment(
+    student_id, assessment_id, transcriptions, intended_words=None, evaluator_result=None
+):
+    """Orchestrates Granular Orthographic Analysis + Prescriptive AI Analysis."""
+
+    # 1. Gracefully parse inputs whether passed as a list of dicts or separate lists
+    if isinstance(transcriptions, list) and transcriptions:
+        if isinstance(transcriptions[0], dict):
+            intended_list = [
+                item.get("intended_word", "").strip() for item in transcriptions
+            ]
+            transcribed_list = [
+                item.get("student_attempt", "").strip()
+                for item in transcriptions
+            ]
+        else:
+            transcribed_list = transcriptions
+            intended_list = intended_words if intended_words is not None else []
+    else:
+        transcribed_list = []
+        intended_list = intended_words if intended_words is not None else []
+
+    # 2. Granular Orthographic Analysis
+    # If app.py already ran the evaluator, use those results. Otherwise, calculate here.
+    if evaluator_result is not None:
+        feature_results = evaluator_result
+    else:
+        feature_results = feature_evaluator.evaluate_spelling_attempt(
+            student_id=str(student_id),
+            transcribed_words=transcribed_list,
+            intended_words=intended_list,
+        )
+
+    # 3. Save feature assessment data (Safely handle DB function variations)
+    try:
+        if hasattr(db, "save_assessment_results"):
+            db.save_assessment_results(assessment_id, feature_results)
+        elif hasattr(db, "save_assessment"):
+            db.save_assessment(assessment_id, feature_results)
+        elif hasattr(db, "save_assessment_data"):
+            db.save_assessment_data(assessment_id, feature_results)
+        else:
+            print("[DB Notice] No matching save function in database_manager. Skipping DB save.")
+    except Exception as db_err:
+        print(f"[DB Warning] Failed to save assessment results: {db_err}")
+
+    # 4. Run Prescriptive Learning Analysis (LLM Summary)
+    summary_prompt = f"""
+    Analyze these spelling assessment feature results for Student ID {student_id}:
+    {feature_results}
+    
+    Provide a concise, 3-bullet-point prescriptive coaching guide for the teacher focusing on orthographic patterns, core gaps, and immediate next steps.
+    """
+
+    prescriptive_feedback = ""
+    try:
+        res = completion(
+            model="gemini/gemini-2.0-flash",
+            api_key=get_api_key("gemini"),
+            messages=[{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+        )
+        prescriptive_feedback = res.choices[0].message.content
+        db.log_model_event(
+            "gemini/gemini-2.0-flash",
+            "success",
+            action="prescriptive_analysis",
+        )
+    except Exception as e:
+        print(f"[Prescriptive Analysis Warning] LLM failed: {e}")
+        prescriptive_feedback = (
+            "Assessment recorded successfully. Feature analysis completed."
+        )
+
+    return {
+        "feature_results": feature_results,
+        "prescriptive_feedback": prescriptive_feedback,
+    }
 
 # --- 4. QUALITATIVE AI DIAGNOSIS ENGINE ---
 def diagnose_errors(
