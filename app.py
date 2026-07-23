@@ -11,6 +11,7 @@ import database_manager as db
 from datetime import datetime
 import feature_evaluator
 import spelling_logic
+from constants import DIAGNOSTIC_GROUPS, DEFAULT_TEST_WORDS, PSI_WORD_BANK
 
 from utils import preprocess_image
 from spelling_logic import get_ai_discrepancy_feedback, transcribe_handwriting, generate_personalized_practice_words
@@ -331,7 +332,7 @@ def show_teacher_dashboard():
     migrate_legacy_profiles()
     current_teacher_email = st.session_state.get('user_email')
     
-    selected_student_id = None
+    student_id = None
     if page == "Student":
         all_students = get_all_students_by_teacher(current_teacher_email)
         student_options = {s['name']: s['student_id'] for s in all_students}
@@ -340,9 +341,9 @@ def show_teacher_dashboard():
             current_names = list(student_options.keys())
             start_index = 0
             
-            if st.session_state.get('selected_student_id'):
+            if st.session_state.get('student_id'):
                 try:
-                    selected_sid = st.session_state.get('selected_student_id')
+                    selected_sid = st.session_state.get('student_id')
                     selected_name = get_student_name(current_teacher_email, selected_sid)
                     if selected_name in current_names:
                         start_index = current_names.index(selected_name)
@@ -350,10 +351,10 @@ def show_teacher_dashboard():
                     start_index = 0
                 
             selected_name = st.sidebar.selectbox("Select Student", options=current_names, index=start_index, key="sidebar_student_selector")
-            newly_selected_student_id = student_options[selected_name]
+            newly_student_id = student_options[selected_name]
 
-            if st.session_state.get('current_student_id') != newly_selected_student_id:
-                st.session_state.current_student_id = newly_selected_student_id
+            if st.session_state.get('current_student_id') != newly_student_id:
+                st.session_state.current_student_id = newly_student_id
                 st.session_state.current_student_name = selected_name
                 
                 keys_to_clear = [
@@ -371,13 +372,13 @@ def show_teacher_dashboard():
                         del st.session_state[key]
                 st.rerun()
             
-            selected_student_id = newly_selected_student_id
+            student_id = newly_student_id
 
     if page == "Class":
         display_class_page()
     elif page == "Student":
-        if selected_student_id:
-            display_student_detail_view(selected_student_id, current_teacher_email)
+        if student_id:
+            display_student_detail_view(student_id, current_teacher_email)
         else:
             st.info("No students assigned to your class yet. Add a student via the 'Class' page.")
     elif page == "Admin":
@@ -416,7 +417,7 @@ def display_class_page():
             col2.write(f"Group {sgroup[-1] if sgroup else '1'}")
             
             if col3.button("View Profile", key=f"btn_{sid}"):
-                st.session_state.selected_student_id = sid
+                st.session_state.student_id = sid
                 st.session_state.next_page = "Student"
                 st.rerun()
 
@@ -697,7 +698,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         named_lists = get_named_lists(current_teacher_email)
         list_options = {"Select a saved list...": None}
         for lst in named_lists:
-            # Handle both 'name' (DB schema) and fallback key 'list_name'
             list_name = lst.get('name') or lst.get('list_name') or f"List #{lst['id']}"
             list_options[list_name] = lst['id']
 
@@ -721,7 +721,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 list_id = list_options[selected_list_name]
                 list_data = get_named_list_by_id(list_id)
                 if list_data:
-                    # Safely retrieve words list or string from DB key 'word_list'
                     raw_words = list_data.get('word_list') or list_data.get('target_words') or ""
                     if isinstance(raw_words, list):
                         raw_words = ", ".join(raw_words)
@@ -793,10 +792,10 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 st.session_state['student_attempts_for_report'] = edited_text
 
     # -----------------------------------------------------------------------------
-    # STAGE 1 & 2 PIPELINE RUNNER BUTTON
+    # STAGE 1 & 2: PIPELINE RUNNER
     # -----------------------------------------------------------------------------
     st.subheader("Run Automated Formative Analytics")
-    
+
     col_opt1, col_opt2 = st.columns([2, 1])
     with col_opt1:
         analysis_complexity = st.select_slider(
@@ -805,50 +804,52 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             value="Standard",
             key=f"analysis_complexity_{student_id}"
         )
-    
+
     with col_opt2:
         st.write("")
         st.write("")
-        run_pipeline = st.button("Click to Run", key=f"run_pipeline_{student_id}", type="primary", use_container_width=True)
+        run_pipeline = st.button(
+            "Click to Run", 
+            key=f"run_pipeline_{student_id}", 
+            type="primary", 
+            use_container_width=True
+        )
 
     if run_pipeline:
         if not st.session_state.get('student_attempts_for_report'):
             st.warning("Please upload and transcribe student handwriting before running analytics.")
         else:
-            intended_words_for_analysis = st.session_state.get("processed_intended_words") or "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+            intended_words_for_analysis = st.session_state.get(
+                "processed_intended_words", 
+                "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
+            )
             attempts_text = st.session_state['student_attempts_for_report']
 
-            # --- STAGE 1: EVALUATOR (DETERMINISTIC scoring against PSI_WORD_BANK) ---
-            with st.spinner("Phase 1/2: Granular Orthographic Analysis"):
-                evaluator_output = None
-                if evaluate_spelling_attempt:
+            with st.spinner("Analyzing orthographic patterns..."):
+                eval_result = feature_evaluator.evaluate_spelling_attempt(
+                    student_id=student_id,
+                    transcribed_words=attempts_text,
+                    intended_words=intended_words_for_analysis
+                )
+
+                st.session_state[f"eval_result_{student_id}"] = eval_result
+                st.session_state["evaluator_result"] = eval_result
+                render_orthographic_analysis(eval_result)
+
+                with st.spinner("Phase 2/2: Prescriptive Learning Analytics"):
                     try:
-                        # Added student_id as the first argument
-                        evaluator_output = evaluate_spelling_attempt(
-                            student_id, 
-                            attempts_text, 
-                            intended_words_for_analysis
+                        current_assessment_id = st.session_state.get('assessment_id', None)
+
+                        analysis_result = spelling_logic.process_full_assessment(
+                            student_id=student_id,
+                            assessment_id=current_assessment_id,
+                            transcriptions=attempts_text,
+                            intended_words=intended_words_for_analysis,
+                            evaluator_result=eval_result
                         )
-                    except Exception as eval_err:
-                        st.warning(f"Feature evaluator module note: {eval_err}")
-
-                st.session_state.evaluator_result = evaluator_output
-
-            # --- STAGE 2: LOGIC ---
-            with st.spinner("Phase 2/2: Prescriptive Learning Analytics"):
-                try:
-                    # Safely get assessment_id if it exists, otherwise default to None
-                    current_assessment_id = locals().get('assessment_id') or st.session_state.get('assessment_id', None)
-
-                    analysis_result = spelling_logic.process_full_assessment(
-                        student_id=student_id,
-                        assessment_id=current_assessment_id,
-                        transcriptions=attempts_text,
-                        intended_words=intended_words_for_analysis,
-                        evaluator_result=evaluator_output
-                    )
-                except Exception as logic_err:
-                    st.error(f"Logic Engine Execution Failed: {logic_err}")
+                        st.session_state["analysis_result"] = analysis_result
+                    except Exception as logic_err:
+                        st.error(f"Logic Engine Execution Failed: {logic_err}")
 
     # -----------------------------------------------------------------------------
     # STAGE 3: DISPLAY (DIAGNOSTIC VISUAL MATRIX & COMPARISON)
@@ -907,9 +908,8 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             )
 
         with col_disp2:
-            st.markdown("**Evaluated Feature Matrix ($G0\text{--}G8$)**")
+            st.markdown("**Evaluated Feature Matrix ($G0\\text{--}G8$)**")
             
-            # Deterministic evaluator output if available
             eval_data = st.session_state.get("evaluator_result")
             if eval_data and isinstance(eval_data, dict) and "scores" in eval_data:
                 st.caption("Deterministic Blueprint Scores:")
@@ -917,7 +917,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                     group_info = constants.DIAGNOSTIC_GROUPS.get(feature_key, {}).get('name', feature_key)
                     st.write(f"- **{feature_key.upper()}** ({group_info}): `{score_val}`")
             else:
-                # Qualitative Logic scores fallback display
                 analysis_obj = st.session_state.get('analysis_result')
                 if analysis_obj:
                     keys_to_check = [
@@ -1069,6 +1068,145 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                         del st.session_state[key]
 
                 st.rerun()
+
+def render_orthographic_analysis(evaluation_result: dict):
+    """
+    Renders the Granular Orthographic Analysis view:
+    1. Target Stage Placement Banner (lowest stage below 90% accuracy).
+    2. Visual Stage Accuracy Profile (Bar chart) + Numerical breakdown for G0-G8.
+    """
+    if not evaluation_result:
+        st.warning("No evaluation data available to display.")
+        return
+
+    assigned_group_key = evaluation_result.get("assigned_group_key", "")
+    assigned_group_name = evaluation_result.get("assigned_group_name", "Undetermined")
+    word_evals = evaluation_result.get("word_evaluations", [])
+
+    # ---------------------------------------------------------
+    # 1. FILTER STRICTLY FOR ATTEMPTED WORDS
+    # ---------------------------------------------------------
+    attempted_word_evals = [
+        w for w in word_evals 
+        if w.get("student_attempt") and str(w.get("student_attempt")).strip()
+    ]
+
+    # Recalculate group stats based ONLY on attempted words
+    group_stats = {g_key: {"earned": 0, "total": 0} for g_key in constants.DIAGNOSTIC_GROUPS.keys()}
+
+    for w in attempted_word_evals:
+        target = w.get("target_features", {})
+        passed = w.get("passed_features", {})
+        for g_key, patterns in target.items():
+            if g_key in group_stats:
+                passed_pats = passed.get(g_key, [])
+                group_stats[g_key]["total"] += len(patterns)
+                group_stats[g_key]["earned"] += len(passed_pats)
+
+    # Build active group data list
+    active_group_data = []
+    for g_key, group_info in constants.DIAGNOSTIC_GROUPS.items():
+        total = group_stats[g_key]["total"]
+        earned = group_stats[g_key]["earned"]
+        if total > 0:
+            pct = round((earned / total) * 100, 1)
+            active_group_data.append({
+                "Group": g_key.upper(),
+                "Group Name": group_info.get("name", "Feature"),
+                "Accuracy (%)": pct,
+                "Earned": earned,
+                "Total": total,
+                "Status": "Mastered" if pct >= 90.0 else "Focus Area"
+            })
+
+    # ---------------------------------------------------------
+    # 2. TARGET FOCUS STAGE DISPLAY (NO OVERALL SCORE)
+    # ---------------------------------------------------------
+    st.markdown("## Granular Orthographic Analysis")
+
+    if assigned_group_key and assigned_group_key != "mastered":
+        st.info(
+            f"**Target Focus Stage:** {assigned_group_key.upper()} ({assigned_group_name}) — "
+            f"Lowest stage with accuracy below the 90% threshold."
+        )
+    else:
+        st.success(
+            f"**Stage Mastered ({assigned_group_name}):** "
+            f"Student demonstrated 90% or higher accuracy across evaluated stages."
+        )
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 3. VISUAL CHART & NUMERICAL BREAKDOWN (G0 - G8)
+    # ---------------------------------------------------------
+    st.markdown("### Stage Accuracy Profile (G0 - G8)")
+
+    if active_group_data:
+        df_groups = pd.DataFrame(active_group_data)
+
+        col_chart, col_table = st.columns([3, 2])
+
+        with col_chart:
+            st.caption("Feature Accuracy Profile (%)")
+            chart_df = df_groups.set_index("Group")[["Accuracy (%)"]]
+            st.bar_chart(chart_df, height=260)
+
+        with col_table:
+            st.caption("Numerical Breakdown")
+            for item in active_group_data:
+                status_flag = "[MASTERED]" if item["Accuracy (%)"] >= 90.0 else "[FOCUS]"
+                st.write(
+                    f"**{item['Group']}** ({item['Group Name']}): "
+                    f"**{item['Accuracy (%)']}%** ({item['Earned']}/{item['Total']}) {status_flag}"
+                )
+    else:
+        st.info("No diagnostic feature targets found in the attempted words.")
+
+    st.markdown("---")
+
+    # =========================================================
+    # 3-4. GRANULAR WORD-BY-WORD FEATURE BADGES
+    # =========================================================
+    st.markdown("### 🔍 Word-by-Word Feature Breakdown")
+
+    for word_eval in word_evals:
+        intended = word_eval.get("intended_word", "")
+        attempt = word_eval.get("student_attempt", "")
+        is_correct = word_eval.get("is_correct", False)
+        passed = word_eval.get("passed_features", {})
+        missed = word_eval.get("missed_features", {})
+        target = word_eval.get("target_features", {})
+
+        status_icon = "✅" if is_correct else "❌"
+
+        # Build inline colored pills for each feature
+        badges_html = []
+        for g_key, patterns in target.items():
+            g_upper = g_key.upper()
+            passed_pats = passed.get(g_key, [])
+
+            for pat in patterns:
+                if pat in passed_pats:
+                    # Green pill for successfully encoded feature
+                    badges_html.append(
+                        f'<span style="background-color:#d4edda; color:#155724; border: 1px solid #c3e6cb; '
+                        f'padding:3px 8px; border-radius:12px; font-weight:600; margin-right:4px; font-size:13px;">'
+                        f'[{g_upper}] {pat} ✓</span>'
+                    )
+                else:
+                    # Red pill for missed feature
+                    badges_html.append(
+                        f'<span style="background-color:#f8d7da; color:#721c24; border: 1px solid #f5c6cb; '
+                        f'padding:3px 8px; border-radius:12px; font-weight:600; margin-right:4px; font-size:13px;">'
+                        f'[{g_upper}] {pat} ✗</span>'
+                    )
+
+        badge_str = " ".join(badges_html) if badges_html else "<em>No feature targets</em>"
+
+        # Correct words start collapsed; incorrect words automatically expand for quick inspection
+        with st.expander(f"{status_icon} **{intended.upper()}** → Student attempt: *'{attempt}'*", expanded=not is_correct):
+            st.markdown(f"**Features Tested:** {badge_str}", unsafe_allow_html=True)
 
 # =============================================================================
 # ADMIN PAGE

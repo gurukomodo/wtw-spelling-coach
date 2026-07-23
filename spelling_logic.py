@@ -1,73 +1,30 @@
 import os
 import json
-from urllib import response
-
-from streamlit.string_util import clean_text
-import database_manager as db
 import re
+import time
+import litellm
 from dotenv import load_dotenv
 from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-import google.genai as genai
 import streamlit as st
-from model_config import get_available_model, get_model_fallbacks, set_model_from_env
-from database_manager import get_latest_teacher_notes
+
+import database_manager as db
 import feature_evaluator
 
 load_dotenv()
 
-# Explicitly fetch and clean keys
-def get_api_key(provider):
+# --- 0. API KEY RESOLUTION ---
+def get_api_key(provider: str) -> str:
+    """Explicitly fetch API keys from environment variables."""
     if provider == "gemini":
-        return (
-            os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-        ).strip()
+        return (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     elif provider == "openrouter":
         return (os.getenv("OPENROUTER_API_KEY") or "").strip()
     elif provider == "groq":
         return (os.getenv("GROQ_API_KEY") or "").strip()
     return ""
-"""
-# --- 0. API & MODEL INITIALIZATION ---
-api_key = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-
-if api_key:
-    if os.environ.get("OTEL_SDK_DISABLED"):
-        print("DEBUG: OTEL_SDK_DISABLED is set, skipping client initialization")
-        client = None
-    else:
-        client = genai.Client(api_key=api_key)
-        print("DEBUG: Initialized new google.genai client")
-else:
-    print("ERROR: No GOOGLE_API_KEY found in st.secrets or environment variables")
-    client = None
-"""
-
-def initialize_model():
-    """Initialize model with fallback logic."""
-    model_name = set_model_from_env()
-    if model_name:
-        try:
-            return model_name
-        except Exception as e:
-            st.warning(f"Model {model_name} not available: {e}")
-    
-    for fallback_model in get_model_fallbacks():
-        try:
-            return fallback_model
-        except Exception as e:
-            continue
-    
-    raise Exception("No available Gemini models found")
-
-
-try:
-    model = initialize_model()
-except Exception as e:
-    print(f"ERROR: Failed to initialize Gemini model: {e}")
-    model = None
 
 
 # --- 1. DYNAMIC WORD LIST LOGIC ---
@@ -92,124 +49,133 @@ class DiagnosisResultSchema(BaseModel):
     coaching_tips: List[str] = Field(description="Actionable mini-lesson ideas or activities for the teacher")
 
 
-# --- 3. VISION TRANSCRIPTION (OCR) ---
-import re  # Ensure this is imported at the top of spelling_logic.py
-
-
-def transcribe_handwriting(base64_image, intended_words=None):
-    if intended_words and intended_words.strip():
-        words_for_prompt = intended_words
-    else:
-        words_for_prompt = get_target_words()
-
-    system_prompt = f"""
-    ROLE: Literal OCR Transcriber for a spelling assessment.
-    TASK: Transcribe handwritten words from a student's spelling test.
-    
-    The intended target words the student was trying to write are: {words_for_prompt}
-    
-    STRICT RULES:
-    1. DO NOT CORRECT SPELLING. If you see 'h-u-p', write 'hup', even if the intended word is 'hope'.
-    2. LOOK AT THE SHAPES. If a letter is ambiguous, choose the one that matches the ink.
-    3. If a word is crossed out, ignore it.
-    4. FORMAT: intended_word: student_attempt (e.g., fan: fan)
-    5. CRITICAL: Output ONLY the list of matched words. DO NOT output any <think> tags, internal monologue, or thinking process.
+def extract_transcription(raw_output: str) -> str:
     """
+    Extracts clean handwriting transcription data from LLM responses.
+    Handles single-line (word: attempt) and two-line (target: X / transcription: Y) formats.
+    """
+    if not raw_output or not isinstance(raw_output, str):
+        return ""
 
-    # Updated vision_models list in spelling_logic.py:
+    text = raw_output.strip()
+
+    # Phase 1: Strip <think> tags
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<think>.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = text.strip()
+
+    if not text and raw_output:
+        text = re.sub(r'<[^>]+>', '', raw_output).strip()
+
+    # Phase 2: Strip Markdown code fences
+    code_block_match = re.search(
+        r'```(?:json|text|markdown)?\s*\n?(.*?)\n?```', 
+        text, 
+        flags=re.DOTALL | re.IGNORECASE
+    )
+    if code_block_match:
+        text = code_block_match.group(1).strip()
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    # Phase 3A: Detect Two-Line Format (target: X \n transcription: Y)
+    i = 0
+    two_line_pairs = []
+    while i < len(lines) - 1:
+        l1 = re.sub(r'^(?:\d+[\.\)]|\*|-)\s*', '', lines[i]).strip()
+        l2 = re.sub(r'^(?:\d+[\.\)]|\*|-)\s*', '', lines[i+1]).strip()
+        
+        m1 = re.match(r'^(?:target|intended|word)\s*[:=\-]\s*([a-zA-Z\'\-]+)$', l1, re.I)
+        m2 = re.match(r'^(?:transcription|attempt|student|student_attempt)\s*[:=\-]\s*([a-zA-Z\'\-]+)$', l2, re.I)
+        
+        if m1 and m2:
+            two_line_pairs.append(f"{m1.group(1).lower()}: {m2.group(1).lower()}")
+            i += 2
+        else:
+            i += 1
+
+    if two_line_pairs:
+        return "\n".join(two_line_pairs)
+
+    # Phase 3B: Standard Single-Line Format (word: attempt)
+    clean_pairs = []
+    for line in lines:
+        line = re.sub(r'^(?:\d+[\.\)]|\*|-)\s*', '', line).strip()
+        match = re.match(r'^([a-zA-Z]+)\s*[:=\-]\s*([a-zA-Z\'\-]+)$', line)
+        if match:
+            k, v = match.groups()
+            if k.lower() not in ['target', 'intended', 'transcription', 'attempt', 'student']:
+                clean_pairs.append(f"{k.lower()}: {v.lower()}")
+
+    if clean_pairs:
+        return "\n".join(clean_pairs)
+
+    return text
+
+
+# --- 3. VISION TRANSCRIPTION (OCR) ---
+def transcribe_handwriting(image_base64: str, intended_words: str = "") -> str:
+    """
+    OCR transcription with rate-limit retries and clean model fallbacks.
+    """
+    # 1. DEFINE THE PROMPT BEFORE CALLING THE MODEL
+    prompt = (
+        "You are an expert handwriting reader for primary school spelling tests. "
+        f"The intended target words for this assessment are: {intended_words}.\n"
+        "Transcribe the student's handwritten attempts line by line. "
+        "Return ONLY the transcribed list of words, one per line."
+    )
+
+    # 2. ACTIVE VISION MODELS (Gemini 2.0 Flash is the primary vision model)
     vision_models = [
-        # 1. Primary: Gemini (Keep, but add fallback redundancy)
-        ("gemini/gemini-2.0-flash", "gemini"),
-
-        # 2. Groq Replacements (Fast inference, active vision models)
-        ("groq/qwen/qwen3.6-27b", "groq"),
-
-        # 3. OpenRouter Active Free Vision Models
-        ("openrouter/google/gemma-4-31b-it:free", "openrouter"),
-
-        # 4. OpenRouter Free Auto-Router (Automatically selects an active free vision model)
-        ("openrouter/openrouter/free", "openrouter"),
+        "gemini/gemini-2.0-flash",
+        "gemini/gemini-1.5-flash",
     ]
 
-    for model_name, provider in vision_models:
-        key = get_api_key(provider)
-        if not key:
-            continue
-
+    for model in vision_models:
         try:
-            response = completion(
-                model=model_name,
-                api_key=key,  # Pass explicitly to override stale environment state
+            response = litellm.completion(
+                model=model,
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": system_prompt},
+                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                },
-                            },
-                        ],
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                            }
+                        ]
                     }
                 ],
-                temperature=0.0,
-                max_tokens=2500,
+                timeout=20
             )
-
-            raw_text = response.choices[0].message.content or ""
-
-            # 1. Try stripping <think> tags
-            clean_text = raw_text
-            if "</think>" in clean_text:
-                clean_text = clean_text.split("</think>")[-1].strip()
             
-            clean_text = re.sub(r"<think>.*?</think>", "", clean_text, flags=re.DOTALL).strip()
+            result = response.choices[0].message.content.strip()
+            
+            # Check for generic safety refusal strings
+            if result and not result.startswith("User Safety:"):
+                return result
 
-            # 2. Safety Net: If stripping tags cleared ALL text (Qwen wrote inside <think>), use raw_text
-            if not clean_text and raw_text:
-                # Strip raw HTML tags but preserve text content
-                clean_text = re.sub(r"<[^>]+>", "", raw_text).strip()
-
-            # Filter out non-vision safety responses
-            ignored_phrases = ["user safety:", "safe", "i cannot view", "i cannot process images"]
-            if clean_text and not any(phrase in clean_text.lower() for phrase in ignored_phrases):
-                db.log_model_event(
-                    model_name, "success", action="transcribe_handwriting"
-                )
-                return clean_text
-            else:
-                print(f"[OCR Warning] {model_name} raw response was: '{raw_text[:150]}...' - Trying next fallback...")
-
+        except litellm.exceptions.RateLimitError:
+            # Pause briefly if free-tier per-second quota is hit
+            time.sleep(3)
+            continue
         except Exception as e:
-            print(
-                f"[OCR Warning] {model_name} failed -> {type(e).__name__}: {e}"
-            )
-            db.log_model_event(
-                model_name,
-                "error",
-                error_msg=str(e),
-                action="transcribe_handwriting",
-            )
+            print(f"[OCR Warning] Model {model} failed -> {e}")
             continue
 
-    raise RuntimeError("All configured OCR vision models failed.")
+    raise RuntimeError("All configured OCR vision models failed. Please check your API keys or try again in a few seconds.")
+
+
 def process_full_assessment(
     student_id, assessment_id, transcriptions, intended_words=None, evaluator_result=None
 ):
     """Orchestrates Granular Orthographic Analysis + Prescriptive AI Analysis."""
-
-    # 1. Gracefully parse inputs whether passed as a list of dicts or separate lists
     if isinstance(transcriptions, list) and transcriptions:
         if isinstance(transcriptions[0], dict):
-            intended_list = [
-                item.get("intended_word", "").strip() for item in transcriptions
-            ]
-            transcribed_list = [
-                item.get("student_attempt", "").strip()
-                for item in transcriptions
-            ]
+            intended_list = [item.get("intended_word", "").strip() for item in transcriptions]
+            transcribed_list = [item.get("student_attempt", "").strip() for item in transcriptions]
         else:
             transcribed_list = transcriptions
             intended_list = intended_words if intended_words is not None else []
@@ -217,8 +183,6 @@ def process_full_assessment(
         transcribed_list = []
         intended_list = intended_words if intended_words is not None else []
 
-    # 2. Granular Orthographic Analysis
-    # If app.py already ran the evaluator, use those results. Otherwise, calculate here.
     if evaluator_result is not None:
         feature_results = evaluator_result
     else:
@@ -228,7 +192,6 @@ def process_full_assessment(
             intended_words=intended_list,
         )
 
-    # 3. Save feature assessment data (Safely handle DB function variations)
     try:
         if hasattr(db, "save_assessment_results"):
             db.save_assessment_results(assessment_id, feature_results)
@@ -236,12 +199,9 @@ def process_full_assessment(
             db.save_assessment(assessment_id, feature_results)
         elif hasattr(db, "save_assessment_data"):
             db.save_assessment_data(assessment_id, feature_results)
-        else:
-            print("[DB Notice] No matching save function in database_manager. Skipping DB save.")
     except Exception as db_err:
         print(f"[DB Warning] Failed to save assessment results: {db_err}")
 
-    # 4. Run Prescriptive Learning Analysis (LLM Summary)
     summary_prompt = f"""
     Analyze these spelling assessment feature results for Student ID {student_id}:
     {feature_results}
@@ -252,27 +212,22 @@ def process_full_assessment(
     prescriptive_feedback = ""
     try:
         res = completion(
-            model="gemini/gemini-2.0-flash",
+            model="gemini/gemini-1.5-flash",
             api_key=get_api_key("gemini"),
             messages=[{"role": "user", "content": summary_prompt}],
             temperature=0.3,
         )
         prescriptive_feedback = res.choices[0].message.content
-        db.log_model_event(
-            "gemini/gemini-2.0-flash",
-            "success",
-            action="prescriptive_analysis",
-        )
+        db.log_model_event("gemini/gemini-1.5-flash", "success", action="prescriptive_analysis")
     except Exception as e:
         print(f"[Prescriptive Analysis Warning] LLM failed: {e}")
-        prescriptive_feedback = (
-            "Assessment recorded successfully. Feature analysis completed."
-        )
+        prescriptive_feedback = "Assessment recorded successfully. Feature analysis completed."
 
     return {
         "feature_results": feature_results,
         "prescriptive_feedback": prescriptive_feedback,
     }
+
 
 # --- 4. QUALITATIVE AI DIAGNOSIS ENGINE ---
 def diagnose_errors(
@@ -282,12 +237,11 @@ def diagnose_errors(
 ) -> Dict[str, Any]:
     """
     Consumes deterministic EvaluationResult output from feature_evaluator.py
-    and generates qualitative pedagogical coaching without recalculating raw scores.
+    and generates qualitative pedagogical coaching.
     """
-    # Fetch historical teacher notes for context
     teacher_notes = None
     try:
-        teacher_notes = get_latest_teacher_notes(student_id)
+        teacher_notes = db.get_latest_teacher_notes(student_id)
     except Exception as e:
         print(f"Notice: Could not retrieve teacher notes for {student_id}: {e}")
 
@@ -341,17 +295,20 @@ Respond ONLY with a valid JSON object matching this structure:
 """
 
     try:
-        response = client.generate_content(model=model, contents=prompt)
-        raw_output = response.text.strip()
+        response = completion(
+            model="gemini/gemini-1.5-flash",
+            api_key=get_api_key("gemini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        raw_output = response.choices[0].message.content.strip()
 
-        # Clean code blocks if present
         if raw_output.startswith("```json"):
             raw_output = raw_output.split("```json")[1].split("```")[0].strip()
         elif raw_output.startswith("```"):
             raw_output = raw_output.split("```")[1].split("```")[0].strip()
 
-        parsed_data = json.loads(raw_output)
-        return parsed_data
+        return json.loads(raw_output)
 
     except Exception as e:
         print(f"Error in diagnose_errors: {e}")
@@ -437,8 +394,13 @@ Provide a coaching report with:
 """
     
     try:
-        response = client.generate_content(model=model, contents=prompt)
-        return response.text
+        response = completion(
+            model="gemini/gemini-1.5-flash",
+            api_key=get_api_key("gemini"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        return response.choices[0].message.content
     except Exception as e:
         return f"AI Coaching currently unavailable: {str(e)}"
 
@@ -501,7 +463,6 @@ Return ONLY a valid JSON array of 10 strings: ["word1", "word2", ..., "word10"]
         crew_output = crew.kickoff()
         output_text = str(crew_output)
         
-        import re
         json_match = re.search(r'\[.*?\]', output_text, re.DOTALL)
         if json_match:
             words = json.loads(json_match.group(0))
@@ -532,6 +493,7 @@ Focus on where your diagnostic process diverged from the teacher's assessment.
     try:
         response = completion(
             model="groq/llama-3.3-70b-versatile",
+            api_key=get_api_key("groq"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
