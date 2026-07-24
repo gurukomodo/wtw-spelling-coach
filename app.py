@@ -770,26 +770,50 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             col_img, col_text = st.columns([1, 1])
             
             with col_img:
-                st.image(clean_img, use_container_width=True, caption="Cleaned Image Input")
+                st.image(clean_img, caption="Cleaned Image Input")
                 if st.button("Read Handwriting via OCR", key=f"read_handwriting_{student_id}"):
                     with st.spinner('Decoding student handwriting...'):
                         try:
-                            result_text = transcribe_handwriting(clean_base64, intended_words=st.session_state.processed_intended_words)
-                            if result_text:
-                                st.session_state[transcription_key] = result_text
-                                st.session_state['student_attempts_for_report'] = result_text
+                            # Returns list[dict]: [{'number': '1', 'intended': 'fun', 'attempt': 'fun'}, ...]
+                            ocr_data = transcribe_handwriting(
+                                clean_base64, 
+                                intended_words=st.session_state.get('processed_intended_words', "")
+                            )
+                            if ocr_data:
+                                st.session_state[transcription_key] = ocr_data
+                                st.session_state['student_attempts_for_report'] = ocr_data
                                 st.success("Handwriting transcribed successfully!")
                                 st.rerun()
                         except Exception as e:
                             st.error(f"OCR Error: {e}")
             
             with col_text:
-                edited_text = st.text_area(
-                    "Verify & Edit Transcription", 
-                    height=180,
-                    key=transcription_key
-                )
-                st.session_state['student_attempts_for_report'] = edited_text
+                st.subheader("Verify & Edit Transcription")
+                current_data = st.session_state.get(transcription_key)
+
+                if current_data:
+                    # If legacy string data exists in session_state, handle gracefully
+                    if isinstance(current_data, list):
+                        df = pd.DataFrame(current_data)
+                    else:
+                        df = pd.DataFrame(columns=["number", "intended", "attempt"])
+
+                    # Interactive table with locked target words and editable attempts
+                    edited_df = st.data_editor(
+                        df,
+                        column_config={
+                            "number": st.column_config.TextColumn("#", disabled=True),
+                            "intended": st.column_config.TextColumn("Target Word", disabled=True),
+                            "attempt": st.column_config.TextColumn("Student Attempt (Editable)"),
+                        },
+                        hide_index=True,
+                        key=f"editor_{student_id}"
+                    )
+
+                    # Save updated dict records directly for report generation
+                    st.session_state['student_attempts_for_report'] = edited_df.to_dict(orient="records")
+                else:
+                    st.info("Click **'Read Handwriting via OCR'** to analyze the student work.")
 
     # -----------------------------------------------------------------------------
     # STAGE 1 & 2: PIPELINE RUNNER
@@ -816,40 +840,65 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         )
 
     if run_pipeline:
-        if not st.session_state.get('student_attempts_for_report'):
+        raw_attempts = st.session_state.get('student_attempts_for_report')
+
+        if not raw_attempts:
             st.warning("Please upload and transcribe student handwriting before running analytics.")
         else:
-            intended_words_for_analysis = st.session_state.get(
+            # 1. Sanitize transcribed attempts (extract strings if they are dicts)
+            if isinstance(raw_attempts, list):
+                transcribed_words = [
+                    item.get("attempt") or item.get("word") or item.get("text") or str(item)
+                    if isinstance(item, dict) else str(item)
+                    for item in raw_attempts
+                ]
+            elif isinstance(raw_attempts, str):
+                transcribed_words = [w.strip() for w in raw_attempts.split(",") if w.strip()]
+            else:
+                transcribed_words = [str(raw_attempts)]
+
+            # 2. Sanitize intended words into a clean list of strings
+            raw_intended = st.session_state.get(
                 "processed_intended_words", 
                 "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
             )
-            attempts_text = st.session_state['student_attempts_for_report']
+            if isinstance(raw_intended, str):
+                intended_words = [w.strip() for w in raw_intended.split(",") if w.strip()]
+            elif isinstance(raw_intended, list):
+                intended_words = [str(w).strip() for w in raw_intended]
+            else:
+                intended_words = raw_intended
 
-            with st.spinner("Analyzing orthographic patterns..."):
-                eval_result = feature_evaluator.evaluate_spelling_attempt(
-                    student_id=student_id,
-                    transcribed_words=attempts_text,
-                    intended_words=intended_words_for_analysis
-                )
+            # 3. Phase 1: Feature Evaluator
+            eval_result = None
+            with st.spinner("Phase 1/2: Analyzing orthographic patterns..."):
+                try:
+                    eval_result = feature_evaluator.evaluate_spelling_attempt(
+                        student_id=student_id,
+                        transcribed_words=transcribed_words,
+                        intended_words=intended_words
+                    )
+                    st.session_state['eval_result'] = eval_result
+                    st.session_state['evaluator_result'] = eval_result
+                except Exception as e:
+                    st.error(f"Error during feature evaluation: {str(e)}")
 
-                st.session_state[f"eval_result_{student_id}"] = eval_result
-                st.session_state["evaluator_result"] = eval_result
-                render_orthographic_analysis(eval_result)
+            # 4. Phase 2: AI Logic Engine
+            with st.spinner("Phase 2/2: Prescriptive Learning Analytics..."):
+                try:
+                    current_assessment_id = st.session_state.get('assessment_id', None)
 
-                with st.spinner("Phase 2/2: Prescriptive Learning Analytics"):
-                    try:
-                        current_assessment_id = st.session_state.get('assessment_id', None)
-
-                        analysis_result = spelling_logic.process_full_assessment(
-                            student_id=student_id,
-                            assessment_id=current_assessment_id,
-                            transcriptions=attempts_text,
-                            intended_words=intended_words_for_analysis,
-                            evaluator_result=eval_result
-                        )
-                        st.session_state["analysis_result"] = analysis_result
-                    except Exception as logic_err:
-                        st.error(f"Logic Engine Execution Failed: {logic_err}")
+                    analysis_result = spelling_logic.process_full_assessment(
+                        student_id=student_id,
+                        assessment_id=current_assessment_id,
+                        transcriptions=transcribed_words,      # Updated variable name
+                        intended_words=intended_words,          # Updated variable name
+                        evaluator_result=eval_result
+                    )
+                    st.session_state["analysis_result"] = analysis_result
+                    st.success("Orthographic analysis completed successfully!")
+                except Exception as logic_err:
+                    st.error(f"Logic Engine Execution Failed: {logic_err}")
 
     # -----------------------------------------------------------------------------
     # STAGE 3: DISPLAY (DIAGNOSTIC VISUAL MATRIX & COMPARISON)
@@ -865,15 +914,37 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             highlighted_content = ""
             if st.session_state.get("processed_intended_words") and st.session_state.get('student_attempts_for_report'):
                 intended_words_raw = st.session_state.get("processed_intended_words", "")
-                student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
+                student_attempts_raw = st.session_state.get('student_attempts_for_report') or st.session_state.get('student_attempts_raw', '')
 
-                intended_list = [w.strip().lower() for w in intended_words_raw.replace('\n', ',').split(',') if w.strip()]
-                raw_lines = student_attempts_raw.replace(',', '\n').split('\n')
-                attempts_raw = []
+                # 1. Parse intended words safely into a list
+                if isinstance(intended_words_raw, list):
+                    intended_list = [str(w).strip().lower() for w in intended_words_raw if str(w).strip()]
+                elif isinstance(intended_words_raw, str):
+                    intended_list = [w.strip().lower() for w in intended_words_raw.replace(',', '\n').split('\n') if w.strip()]
+                else:
+                    intended_list = []
 
+                # 2. Parse student attempts safely into a list
+                if isinstance(student_attempts_raw, list):
+                    attempts_list = [
+                        item.get("attempt") or item.get("word") or item.get("text") or str(item)
+                        if isinstance(item, dict) else str(item)
+                        for item in student_attempts_raw
+                    ]
+                elif isinstance(student_attempts_raw, str):
+                    attempts_list = [
+                        line.strip() 
+                        for line in student_attempts_raw.replace(',', '\n').split('\n') 
+                        if line.strip()
+                    ]
+                else:
+                    attempts_list = []
+
+                # 3. Clean attempt strings (strip numbering/prefixes)
                 import re
-                for line in raw_lines:
-                    cleaned_line = line.strip().lower()
+                attempts_raw = []
+                for line in attempts_list:  # <-- CHANGED FROM raw_lines TO attempts_list
+                    cleaned_line = str(line).strip().lower()
                     if not cleaned_line:
                         continue
                     if ":" in cleaned_line:
@@ -883,6 +954,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                     if student_word:
                         attempts_raw.append(student_word)
 
+                # 4. Compare side-by-side
                 min_len = min(len(intended_list), len(attempts_raw))
                 highlighted_content += "<ul style='list-style-type: none; padding-left: 0; margin: 0; font-family: monospace;'>"
                 for i in range(min_len):

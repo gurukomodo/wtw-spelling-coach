@@ -114,29 +114,62 @@ def extract_transcription(raw_output: str) -> str:
 
 
 # --- 3. VISION TRANSCRIPTION (OCR) ---
-def transcribe_handwriting(image_base64: str, intended_words: str = "") -> str:
+def clean_ocr_text(text: str) -> str:
+    """Strips reasoning blocks, markdown fences, and extra chatter."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<(thinking|think)>.*?</\1>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<(thinking|think)>.*$", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"```[a-zA-Z]*\n?", "", cleaned)
+    return cleaned.replace("```", "").strip()
+
+
+def transcribe_handwriting(image_base64: str, intended_words: str = "") -> list[dict]:
     """
-    OCR transcription with rate-limit retries and clean model fallbacks.
+    Transcribes handwriting and pairs each item directly with its target word.
+    Returns a list of dicts: [{'number': '1', 'intended': 'blade', 'attempt': 'blad'}, ...]
     """
-    # 1. DEFINE THE PROMPT BEFORE CALLING THE MODEL
     prompt = (
-        "You are an expert handwriting reader for primary school spelling tests. "
-        f"The intended target words for this assessment are: {intended_words}.\n"
-        "Transcribe the student's handwritten attempts line by line. "
-        "Return ONLY the transcribed list of words, one per line."
+        "You are an expert handwriting reader for primary school spelling tests.\n"
+        f"The intended target words for this assessment in order are: {intended_words}.\n\n"
+        "Instructions:\n"
+        "1. Match each line of handwriting to the corresponding intended target word.\n"
+        "2. Transcribe the exact letters the student wrote for each item.\n"
+        "3. Output strictly line by line in this format: Number | Intended | Attempt\n"
+        "Example output:\n"
+        "1 | fun | fun\n"
+        "12 | blade | blad\n"
+        "14 | fright | frite\n\n"
+        "CRITICAL: Do NOT include preamble, thinking tags, or extra commentary. Return ONLY the formatted lines."
     )
 
-    # 2. ACTIVE VISION MODELS (Gemini 2.0 Flash is the primary vision model)
+    # Full multi-provider fallback chain
     vision_models = [
-        "gemini/gemini-2.0-flash",
-        "gemini/gemini-1.5-flash",
+        {"model": "gemini/gemini-2.0-flash", "api_key": os.getenv("GEMINI_API_KEY")},
+        {"model": "groq/qwen/qwen3.6-27b", "api_key": os.getenv("GROQ_API_KEY")},
+        {"model": "mistral/pixtral-12b-2409", "api_key": os.getenv("MISTRAL_API_KEY")},
+        {"model": "mistral/mistral-medium-3.5", "api_key": os.getenv("MISTRAL_API_KEY")},
+        {
+            "model": "openai/Qwen/Qwen2.5-VL-72B-Instruct",
+            "api_key": os.getenv("OVH_API_KEY"),
+            "api_base": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
+        },
+        {"model": "openrouter/qwen/qwen-2.5-vl-72b-instruct:free", "api_key": os.getenv("OPENROUTER_API_KEY")},
+        {"model": "openrouter/google/gemini-2.0-flash-exp:free", "api_key": os.getenv("OPENROUTER_API_KEY")},
+        {"model": "huggingface/meta-llama/Llama-3.2-11B-Vision-Instruct", "api_key": os.getenv("HF_API_KEY")},
+        {"model": "huggingface/Qwen/Qwen2.5-VL-7B-Instruct", "api_key": os.getenv("HF_API_KEY")},
     ]
 
-    for model in vision_models:
+    for config in vision_models:
+        api_key = config.get("api_key")
+        if not api_key:
+            continue  # Skip models whose keys aren't exported in the environment
+
         try:
-            response = litellm.completion(
-                model=model,
-                messages=[
+            kwargs = {
+                "model": config["model"],
+                "api_key": api_key,
+                "messages": [
                     {
                         "role": "user",
                         "content": [
@@ -148,24 +181,36 @@ def transcribe_handwriting(image_base64: str, intended_words: str = "") -> str:
                         ]
                     }
                 ],
-                timeout=20
-            )
-            
-            result = response.choices[0].message.content.strip()
-            
-            # Check for generic safety refusal strings
-            if result and not result.startswith("User Safety:"):
-                return result
+                "temperature": 0.0,
+                "max_tokens": 1000,
+                "timeout": 25
+            }
 
-        except litellm.exceptions.RateLimitError:
-            # Pause briefly if free-tier per-second quota is hit
-            time.sleep(3)
-            continue
+            if "api_base" in config:
+                kwargs["api_base"] = config["api_base"]
+
+            response = litellm.completion(**kwargs)
+            cleaned_text = clean_ocr_text(response.choices[0].message.content)
+
+            # Parse line by line into structured pairs
+            parsed_results = []
+            for line in cleaned_text.splitlines():
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 3:
+                    parsed_results.append({
+                        "number": parts[0],
+                        "intended": parts[1],
+                        "attempt": parts[2]
+                    })
+            
+            if parsed_results:
+                return parsed_results
+
         except Exception as e:
-            print(f"[OCR Warning] Model {model} failed -> {e}")
+            print(f"[OCR Warning] Model {config['model']} failed -> {e}")
             continue
 
-    raise RuntimeError("All configured OCR vision models failed. Please check your API keys or try again in a few seconds.")
+    raise RuntimeError("All configured OCR vision models failed. Check your API keys in environment variables.")
 
 
 def process_full_assessment(

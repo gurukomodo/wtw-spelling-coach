@@ -58,20 +58,27 @@ def _check_pattern_in_attempt(attempt: str, pattern: str) -> bool:
     return clean_pattern in clean_attempt
 
 
-def evaluate_single_word(
-    intended_word: str, 
-    student_attempt: str, 
-    word_bank_entry: Dict[str, Any]
-) -> WordEvaluation:
+def evaluate_single_word(intended_word, student_attempt, word_info):
     """
-    Evaluates a single student attempt against the intended word and feature dict in PSI_WORD_BANK.
+    Evaluates a single student attempt against the intended word and feature definition.
     """
-    clean_intended = intended_word.strip().lower()
-    clean_attempt = student_attempt.strip().lower()
+    # Defensive extraction if student_attempt is a dictionary
+    if isinstance(student_attempt, dict):
+        student_attempt = (
+            student_attempt.get("attempt") 
+            or student_attempt.get("word") 
+            or student_attempt.get("text") 
+            or str(student_attempt)
+        )
+    
+    # Ensure strings before calling .strip()
+    clean_intended = str(intended_word).strip().lower() if intended_word else ""
+    clean_attempt = str(student_attempt).strip().lower() if student_attempt else ""
+    
     is_correct = (clean_intended == clean_attempt)
 
-    # Features dictionary from PSI_WORD_BANK, e.g., {"g0": ["f", "n"], "g1": ["a"]}
-    features_dict: Dict[str, List[str]] = word_bank_entry.get("features", {})
+    # --- FIX: Change word_bank_entry to word_info ---
+    features_dict: Dict[str, List[str]] = word_info.get("features", {}) if isinstance(word_info, dict) else {}
 
     passed_features: Dict[str, List[str]] = {}
     missed_features: Dict[str, List[str]] = {}
