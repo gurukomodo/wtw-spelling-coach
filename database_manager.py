@@ -217,129 +217,63 @@ def repair_schema(cursor):
 # ASSESSMENT SAVING ENGINE
 # ============================================================
 
-def save_assessment(
-    data: Any,
-    raw_text: str = "",
-    teacher_refinement: Optional[str] = None,
-    struggling_words: Optional[str] = None,
-    teacher_id: Optional[str] = None,
-    teacher_observations: Optional[str] = None,
-    test_template: Optional[str] = None,
-    coaching_report: Optional[str] = None
-) -> bool:
-    """
-    Saves assessment data to SQLite database. Supports dictionary payloads from
-    feature_evaluator.py, Pydantic objects, or legacy assessment classes.
-    """
-    if not teacher_id:
-        raise ValueError("teacher_id is required to save assessment")
-
-    # Handle Pydantic schema dict convert
-    if hasattr(data, "dict") and callable(getattr(data, "dict")):
-        data = data.dict()
-
-    evaluation_json_str = None
+def save_assessment(assessment_data, student_id=None, raw_text=None, teacher_id=None, teacher_refinement=None, struggling_words=None, test_name=None):
+    """Saves assessment data to SQLite with explicit student_id and UI return status."""
     
-    if isinstance(data, dict):
-        student_id = data.get("student_id")
-        real_name = data.get("real_name", student_id)
-        
-        feature_summary = data.get("feature_summary", {})
-        
-        def extract_score(g_key: str) -> float:
-            val = feature_summary.get(g_key, 0.0)
-            if isinstance(val, dict):
-                return float(val.get("percentage", 0.0))
-            return float(val)
-
-        g0 = extract_score("g0")
-        g1 = extract_score("g1")
-        g2 = extract_score("g2")
-        g3 = extract_score("g3")
-        g4 = extract_score("g4")
-        g5 = extract_score("g5")
-        g6 = extract_score("g6")
-        g7 = extract_score("g7")
-        g8 = extract_score("g8")
-
-        suggested = data.get("suggested_next_groups", [])
-        suggested_str = ", ".join(suggested) if isinstance(suggested, list) else str(suggested or "")
-        teacher_notes = data.get("teacher_notes", "")
-        evaluation_json_str = json.dumps(data)
-
-        # Auto-extract struggling words if missing
-        if not struggling_words and "word_evaluations" in data:
-            missed = []
-            for w in data["word_evaluations"]:
-                if not w.get("is_correct"):
-                    attempt = w.get("student_attempt", "")
-                    intended = w.get("intended_word", "")
-                    missed.append(f"{intended}:{attempt}")
-            if missed:
-                struggling_words = ", ".join(missed)
-
+    # 1. Sanitize raw_text and struggling_words for SQLite
+    if isinstance(raw_text, (list, dict)):
+        raw_text_db = json.dumps(raw_text)
     else:
-        # Legacy Object Fallback
-        student_id = getattr(data, 'student_id', None)
-        real_name = getattr(data, 'real_name', None) or student_id
-        g0 = getattr(data, 'g0_phonemic_awareness', 0.0)
-        g1 = getattr(data, 'g1_cvc_mapping', 0.0)
-        g2 = getattr(data, 'g2_digraphs', 0.0)
-        g3 = getattr(data, 'g3_silent_e', 0.0)
-        g4 = getattr(data, 'g4_vowel_teams', 0.0)
-        g5 = getattr(data, 'g5_r_controlled', 0.0)
-        g6 = getattr(data, 'g6_clusters', 0.0)
-        g7 = getattr(data, 'g7_multisyllabic', 0.0)
-        g8 = getattr(data, 'g8_reduction_morphology', 0.0)
-        
-        suggested = getattr(data, 'suggested_next_groups', [])
-        suggested_str = ", ".join(suggested) if isinstance(suggested, list) else str(suggested or "")
-        teacher_notes = getattr(data, 'teacher_notes', "")
+        raw_text_db = str(raw_text) if raw_text is not None else ""
 
-    if not student_id:
-        raise ValueError("student_id missing from assessment payload")
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    # Link / update student identity
-    cursor.execute('SELECT teacher_id, real_name FROM student_identity WHERE student_id = ?', (student_id,))
-    result = cursor.fetchone()
-
-    if result:
-        existing_teacher, existing_name = result
-        if not existing_teacher or existing_teacher != teacher_id:
-            cursor.execute('UPDATE student_identity SET teacher_id = ? WHERE student_id = ?', (teacher_id, student_id))
-        if existing_name != real_name and real_name != student_id:
-            cursor.execute('UPDATE student_identity SET real_name = ? WHERE student_id = ?', (real_name, student_id))
+    if isinstance(struggling_words, (list, dict)):
+        struggling_words_db = json.dumps(struggling_words)
     else:
-        pseudonym = generate_pseudonym(teacher_id, student_id)
-        cursor.execute('''
-            INSERT INTO student_identity (teacher_id, student_id, real_name, pseudonym)
-            VALUES (?, ?, ?, ?)
-        ''', (teacher_id, student_id, real_name, pseudonym))
+        struggling_words_db = str(struggling_words) if struggling_words is not None else ""
+
+    # Ensure student_id is extracted if passed inside assessment_data
+    resolved_student_id = student_id or getattr(assessment_data, 'student_id', None)
+    if isinstance(assessment_data, dict):
+        resolved_student_id = resolved_student_id or assessment_data.get('student_id')
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute('''
-        INSERT INTO assessments (
-            student_id, teacher_id, test_date, created_at, raw_transcription,
-            g0_phonemic, g1_cvc, g2_digraphs, g3_silent_e,
-            g4_vowel_teams, g5_r_controlled, g6_clusters,
-            g7_multisyllabic, g8_reduction, suggested_next,
-            teacher_notes, teacher_refined_notes, struggling_words, teacher_observations,
-            coaching_report, test_template, evaluation_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        student_id, teacher_id, datetime.now().strftime("%Y-%m-%d"), now, raw_text,
-        g0, g1, g2, g3, g4, g5, g6, g7, g8,
-        suggested_str, teacher_notes, teacher_refinement, struggling_words, teacher_observations,
-        coaching_report, test_template, evaluation_json_str
-    ))
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    conn.commit()
-    conn.close()
-    return True
+    try:
+        cursor.execute('''
+            INSERT INTO assessments (
+                student_id,
+                teacher_id,
+                test_date,
+                created_at,
+                raw_transcription,
+                teacher_refined_notes,
+                struggling_words,
+                test_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            resolved_student_id,
+            teacher_id,
+            now,
+            now,
+            raw_text_db,
+            teacher_refinement,
+            struggling_words_db,
+            test_name
+        ))
+        
+        conn.commit()
+        return True
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Database error in save_assessment: {e}")
+        return False
+
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -555,23 +489,26 @@ def get_student_history(student_id, teacher_id=None, admin=False):
             g4_vowel_teams, g5_r_controlled, g6_clusters,
             g7_multisyllabic, g8_reduction, suggested_next,
             teacher_notes, teacher_refined_notes, struggling_words, teacher_observations,
-            coaching_report, test_template, raw_transcription, evaluation_json
+            coaching_report, test_template, raw_transcription, evaluation_json, test_name
         FROM assessments
         WHERE student_id = ?
         ORDER BY created_at ASC
     ''', (student_id,))
     results = cursor.fetchall()
     conn.close()
-    
+
     column_names = [
         'id', 'student_id', 'teacher_id', 'test_date', 'created_at',
         'g0_phonemic', 'g1_cvc', 'g2_digraphs', 'g3_silent_e',
         'g4_vowel_teams', 'g5_r_controlled', 'g6_clusters',
         'g7_multisyllabic', 'g8_reduction', 'suggested_next',
         'teacher_notes', 'teacher_refined_notes', 'struggling_words', 'teacher_observations',
-        'coaching_report', 'test_template', 'raw_transcription', 'evaluation_json'
+        'coaching_report', 'test_template', 'raw_transcription', 'evaluation_json', 'test_name'
     ]
+
     return [dict(zip(column_names, row)) for row in results]
+    
+
 
 
 def get_all_students_by_teacher(teacher_email):
@@ -1130,3 +1067,44 @@ def get_model_logs():
         recent_logs = cursor.fetchall()
 
         return summary, recent_logs
+
+def ensure_schema_updated():
+    """Ensures missing columns are added to existing SQLite tables."""
+    conn = get_db_connection() # or sqlite3.connect("your_database.db")
+    cursor = conn.cursor()
+    
+    # Columns that may be missing from older DB versions
+    columns_to_check = [
+        ("teacher_refinement", "TEXT"),
+        ("struggling_words", "TEXT"),
+        ("test_name", "TEXT")
+    ]
+    
+    for col_name, col_type in columns_to_check:
+        try:
+            cursor.execute(f"ALTER TABLE assessments ADD COLUMN {col_name} {col_type}")
+            conn.commit()
+            print(f"Added missing column '{col_name}' to assessments table.")
+        except sqlite3.OperationalError:
+            # Column already exists, pass safely
+            pass
+
+    conn.close()
+
+# Run schema update on import/init
+ensure_schema_updated()
+
+def delete_assessment(assessment_id):
+    """Deletes an assessment record by its ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM assessments WHERE id = ?", (assessment_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting assessment {assessment_id}: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()

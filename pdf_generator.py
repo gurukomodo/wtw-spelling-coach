@@ -235,4 +235,185 @@ class ActivityPDF:
         # Wrap foundational markers inside high-visibility callouts
         elements.append(self.make_educational_callout("WALT (We Are Learning To)", self.data['walt_text']))
         elements.append(Spacer(1, 10))
-        elements.append(self.make
+        elements.append(self.make_educational_callout("WILF (What I'm Looking For)", self.data['wilf_text']))
+        elements.append(Spacer(1, 10))
+        elements.append(self.make_educational_callout("TIB (This Is Because)", self.data['tib_text']))
+        elements.append(Spacer(1, 20))
+
+        if self.data.get('teacher_notes'):
+            elements.append(Paragraph("Teacher Notes", self.styles['callout_title']))
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(self.data['teacher_notes'], self.styles['body']))
+            elements.append(Spacer(1, 20))
+
+        elements.append(Paragraph("Word List", self.styles['callout_title']))
+        elements.append(Spacer(1, 6))
+
+        words = self.data.get('content_data', [])
+        word_rows = [", ".join(words[i:i + 5]) for i in range(0, len(words), 5)]
+        for row in word_rows:
+            elements.append(Paragraph(row, self.styles['body']))
+
+        return elements
+
+    def create_task_sheet(self):
+        """Student-facing sheet: read each word, then use it in an original sentence."""
+        elements = []
+        elements.append(HeaderWithLine("STUDENT TASK SHEET", self.styles['header']))
+        elements.append(Spacer(1, 15))
+
+        elements.append(Paragraph(
+            "Read each word carefully. Then write your own sentence using the word.",
+            self.styles['body']
+        ))
+        elements.append(Spacer(1, 20))
+
+        words = self.data.get('content_data', [])
+        table_data = []
+        for word in words:
+            table_data.append([Paragraph(f"<b>{word}</b>", self.styles['body']), ""])
+
+        task_table = Table(table_data, colWidths=[100, A4[0] - 220])
+        task_table.setStyle(TableStyle([
+            ('LINEBELOW', (1, 0), (1, -1), 0.75, HexColor('#888888')),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ]))
+        elements.append(task_table)
+
+        return elements
+
+    def create_response_sheet(self):
+        """Student practice sheet: primary handwriting lines for each target word."""
+        elements = []
+        elements.append(HeaderWithLine("SPELLING PRACTICE SHEET", self.styles['header']))
+        elements.append(Spacer(1, 15))
+
+        elements.append(Paragraph(
+            "Write each word three times on the lines below.",
+            self.styles['body']
+        ))
+        elements.append(Spacer(1, 15))
+
+        words = self.data.get('content_data', [])
+        line_width = A4[0] - 120
+
+        for word in words:
+            elements.append(Paragraph(f"<b>{word}</b>", self.styles['callout_title']))
+            elements.append(Spacer(1, 4))
+            for _ in range(3):
+                elements.append(PrimaryLinesFlowable(width=line_width))
+                elements.append(Spacer(1, 4))
+            elements.append(Spacer(1, 10))
+
+        return elements
+
+
+def generate_class_practice_sheet(class_data, lists_per_page=6):
+    """Compact printable sheet of several students' weekly practice lists.
+
+    class_data: list of dicts, each shaped like:
+        {'student_name': str, 'group_title': str, 'words': list[str]}
+        (group_title and words are typically what's already stored in
+        st.session_state[f'practice_list_{student_id}'].)
+    lists_per_page: 4 or 6 recommended. 6 uses a 2x3 grid, anything <=4
+        uses a 2x2 grid.
+    """
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    w, h = A4
+
+    cols = 2
+    rows = 3 if lists_per_page > 4 else 2
+
+    margin = 30
+    top_margin = 50
+    bottom_margin = 40
+    gap = 14
+
+    grid_w = w - 2 * margin
+    grid_h = h - top_margin - bottom_margin
+
+    card_w = (grid_w - (cols - 1) * gap) / cols
+    card_h = (grid_h - (rows - 1) * gap) / rows
+
+    forest = HexColor('#006633')
+    dark = HexColor('#222222')
+    muted = HexColor('#777777')
+    header_bg = HexColor('#f4f9f5')
+    border = HexColor('#dddddd')
+
+    def draw_page_header(page_num):
+        c.setFillColor(forest)
+        c.rect(0, h - 10, w, 10, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 12)
+        c.setFillColor(forest)
+        c.drawString(margin, h - 30, "Weekly Practice Lists")
+        c.setFont("Helvetica", 8)
+        c.setFillColor(muted)
+        c.drawRightString(w - margin, h - 30, f"Page {page_num}")
+
+    def draw_card(x, y, student):
+        c.setStrokeColor(border)
+        c.setLineWidth(0.75)
+        c.roundRect(x, y, card_w, card_h, 6, fill=0, stroke=1)
+
+        c.setFillColor(header_bg)
+        c.roundRect(x, y + card_h - 26, card_w, 26, 6, fill=1, stroke=0)
+        c.rect(x, y + card_h - 26, card_w, 13, fill=1, stroke=0)
+
+        c.setFillColor(dark)
+        c.setFont("Helvetica-Bold", 10.5)
+        c.drawString(x + 10, y + card_h - 17, student.get('student_name', ''))
+
+        c.setFillColor(muted)
+        c.setFont("Helvetica", 8)
+        c.drawRightString(x + card_w - 10, y + card_h - 17, student.get('group_title', ''))
+
+        words = student.get('words', [])
+        half = (len(words) + 1) // 2
+        col1_words, col2_words = words[:half], words[half:]
+
+        line_h = 13.5
+        text_top = y + card_h - 40
+        col1_x = x + 12
+        col2_x = x + card_w / 2 + 4
+
+        c.setFont("Helvetica", 9)
+        for i, word in enumerate(col1_words):
+            yy = text_top - i * line_h
+            c.setFillColor(muted)
+            c.drawString(col1_x, yy, f"{i + 1}.")
+            c.setFillColor(dark)
+            c.drawString(col1_x + 14, yy, word)
+
+        for i, word in enumerate(col2_words):
+            yy = text_top - i * line_h
+            c.setFillColor(muted)
+            c.drawString(col2_x, yy, f"{half + i + 1}.")
+            c.setFillColor(dark)
+            c.drawString(col2_x + 14, yy, word)
+
+    page_num = 1
+    draw_page_header(page_num)
+
+    per_page = cols * rows
+    slot = 0
+    for student in class_data:
+        if slot == per_page:
+            c.showPage()
+            page_num += 1
+            draw_page_header(page_num)
+            slot = 0
+
+        row = slot // cols
+        col = slot % cols
+        x = margin + col * (card_w + gap)
+        y = h - top_margin - (row + 1) * card_h - row * gap
+
+        draw_card(x, y, student)
+        slot += 1
+
+    c.save()
+    buffer.seek(0)
+    return buffer

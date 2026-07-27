@@ -13,8 +13,13 @@ import feature_evaluator
 import spelling_logic
 from constants import DIAGNOSTIC_GROUPS, DEFAULT_TEST_WORDS, PSI_WORD_BANK
 
-from utils import preprocess_image
-from spelling_logic import get_ai_discrepancy_feedback, transcribe_handwriting, generate_personalized_practice_words
+from utils import preprocess_image, clean_ai_formatting
+from spelling_logic import (
+    get_ai_discrepancy_feedback, 
+    transcribe_handwriting, 
+    generate_personalized_practice_words,
+    process_assessment_response  
+)
 
 try:
     from feature_evaluator import evaluate_spelling_attempt
@@ -592,35 +597,98 @@ def display_student_detail_view(student_id, current_teacher_email):
     st.subheader("Diagnostic Assessment History")
     if history:
         for assessment in reversed(history):
-            raw_name = assessment.get('test_name')
-            test_name = "Ad-hoc Assessment"
+            # 1. Fetch Teacher Notes (checks all common DB column names)
+            teacher_notes = (
+                assessment.get('teacher_refined_notes') 
+                or assessment.get('teacher_notes') 
+                or assessment.get('refinement_notes')
+                or assessment.get('notes')
+                or assessment.get('analysis')
+                or assessment.get('ai_analysis')
+                or assessment.get('summary')
+                or assessment.get('feedback')
+            )
 
-            if raw_name and raw_name not in ["Unspecified Assessment List", "Select a saved list...", "None", ""]:
-                test_name = raw_name
+            # 2. Extract Test Name (Checks "Word List:" header first)
+            extracted_title = None
+            notes_str = str(teacher_notes or "").strip()
+            if notes_str.startswith("Word List:"):
+                extracted_title = notes_str.split('\n')[0].replace("Word List: ", "").strip()
+
+            raw_name = (
+                extracted_title
+                or assessment.get('list_name')
+                or assessment.get('test_name') 
+                or assessment.get('assessment_type') 
+                or assessment.get('stage')
+            )
+
+            ignored_names = [
+                "ad-hoc assessment", "ad-hoc", "adhoc", 
+                "unspecified assessment list", "select a saved list...", 
+                "none", "", "n/a"
+            ]
+
+            if raw_name and str(raw_name).strip().lower() not in ignored_names:
+                raw_str = str(raw_name).strip()
+                test_name = f"{raw_str.upper()} Assessment" if not raw_str.upper().endswith("ASSESSMENT") else raw_str
             else:
-                refinement_notes = assessment.get('teacher_refined_notes', '')
-                if refinement_notes.startswith("Word List:"):
-                    test_name = refinement_notes.split('\n')[0].replace("Word List: ", "").strip()
+                test_name = "Ad-hoc Assessment"
 
-            created_at = assessment.get('created_at', 'N/A')
-            date_only = created_at.split(' ')[0] if created_at and ' ' in created_at else created_at
-            suggested_group = assessment.get('suggested_next', 'N/A').upper()
+            created_at = assessment.get('created_at') or 'N/A'
+            date_only = created_at.split(' ')[0] if ' ' in created_at else created_at
 
-            expander_title = f"**{test_name}** – {date_only} (Suggested: {suggested_group})"
+            raw_next = assessment.get('suggested_next') or 'N/A'
+            suggested_group = raw_next.upper()
+
+            if suggested_group != 'N/A':
+                expander_title = f"**{test_name}** – {date_only} (Suggested: {suggested_group})"
+            else:
+                expander_title = f"**{test_name}** – {date_only}"
 
             with st.expander(expander_title, expanded=False):
+                # Student Responses Table Display
                 st.subheader("Student Responses")
-                if assessment.get('raw_transcription'):
-                    st.code(assessment['raw_transcription'], language='text')
+                responses_raw = (
+                    assessment.get('student_responses') 
+                    or assessment.get('transcriptions') 
+                    or assessment.get('raw_transcription')
+                )
+
+                responses_list = None
+                if isinstance(responses_raw, str):
+                    try:
+                        responses_list = json.loads(responses_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        responses_list = None
+                elif isinstance(responses_raw, list):
+                    responses_list = responses_raw
+
+                if isinstance(responses_list, list) and len(responses_list) > 0:
+                    df_responses = pd.DataFrame(responses_list)
+                    rename_map = {
+                        "number": "#",
+                        "intended": "Target Word",
+                        "attempt": "Student Attempt",
+                        "correct": "Correct?"
+                    }
+                    df_responses = df_responses.rename(
+                        columns={k: v for k, v in rename_map.items() if k in df_responses.columns}
+                    )
+                    st.dataframe(df_responses, use_container_width=True, hide_index=True)
+                elif isinstance(responses_raw, str) and responses_raw.strip():
+                    st.code(responses_raw, language='text')
                 else:
                     st.info("No student responses recorded for this assessment.")
         
+                # Teacher Notes Display
                 st.subheader("Teacher Notes")
-                if assessment.get('teacher_refined_notes'):
-                    st.markdown(assessment['teacher_refined_notes'])
+                if teacher_notes and str(teacher_notes).strip():
+                    st.markdown(str(teacher_notes).strip())
                 else:
                     st.info("No teacher notes recorded for this assessment.")
 
+                # G-Level Scores
                 diagnostic_groups = getattr(constants, 'DIAGNOSTIC_GROUPS', {})
                 if diagnostic_groups:
                     g_scores_found = {
@@ -642,12 +710,13 @@ def display_student_detail_view(student_id, current_teacher_email):
                             group_name = diagnostic_groups[k].get('name', 'Unknown Focus')
                             st.write(f"- **{k.upper()}** ({group_name}): {v}")
 
+                # Delete Assessment Popover
                 col_del_btn, _ = st.columns([1, 4])
                 with col_del_btn:
                     with st.popover("Delete this assessment?", use_container_width=True):
                         st.write("Are you sure you want to delete this assessment?")
                         if st.button("Confirm Delete", type="primary", key=f"confirm_delete_assessment_{assessment['id']}"):
-                            if delete_assessment(assessment['id']):
+                            if db.delete_assessment(assessment['id']):
                                 st.success("Assessment deleted successfully!")
                                 st.rerun()
                             else:
@@ -657,12 +726,11 @@ def display_student_detail_view(student_id, current_teacher_email):
 
     st.divider()
 
+    display_assessment_pipeline(student_id, student_name, current_teacher_email)
+
     # =============================================================================
     # ASSESSMENT EXECUTION PIPELINE
     # =============================================================================
-    display_assessment_pipeline(student_id, student_name, current_teacher_email)
-
-
 def display_assessment_pipeline(student_id, student_name, current_teacher_email):
     """
     Modular 4-Stage Workflow:
@@ -681,8 +749,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         st.session_state['student_attempts_for_report'] = st.session_state[transcription_key]
     if 'student_attempts_for_report' not in st.session_state:
         st.session_state['student_attempts_for_report'] = ""
-
-    classroom_data_key = f"shadow_data_{student_id}"
 
     # -----------------------------------------------------------------------------
     # 0. INPUT PREPARATION: TARGET WORDS & OCR TRANSCRIPTION
@@ -774,7 +840,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 if st.button("Read Handwriting via OCR", key=f"read_handwriting_{student_id}"):
                     with st.spinner('Decoding student handwriting...'):
                         try:
-                            # Returns list[dict]: [{'number': '1', 'intended': 'fun', 'attempt': 'fun'}, ...]
                             ocr_data = transcribe_handwriting(
                                 clean_base64, 
                                 intended_words=st.session_state.get('processed_intended_words', "")
@@ -792,13 +857,11 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 current_data = st.session_state.get(transcription_key)
 
                 if current_data:
-                    # If legacy string data exists in session_state, handle gracefully
                     if isinstance(current_data, list):
                         df = pd.DataFrame(current_data)
                     else:
                         df = pd.DataFrame(columns=["number", "intended", "attempt"])
 
-                    # Interactive table with locked target words and editable attempts
                     edited_df = st.data_editor(
                         df,
                         column_config={
@@ -810,7 +873,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                         key=f"editor_{student_id}"
                     )
 
-                    # Save updated dict records directly for report generation
                     st.session_state['student_attempts_for_report'] = edited_df.to_dict(orient="records")
                 else:
                     st.info("Click **'Read Handwriting via OCR'** to analyze the student work.")
@@ -845,7 +907,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         if not raw_attempts:
             st.warning("Please upload and transcribe student handwriting before running analytics.")
         else:
-            # 1. Sanitize transcribed attempts (extract strings if they are dicts)
             if isinstance(raw_attempts, list):
                 transcribed_words = [
                     item.get("attempt") or item.get("word") or item.get("text") or str(item)
@@ -857,7 +918,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             else:
                 transcribed_words = [str(raw_attempts)]
 
-            # 2. Sanitize intended words into a clean list of strings
             raw_intended = st.session_state.get(
                 "processed_intended_words", 
                 "fan, pet, dig, rob, hope, wait, gum, sled, stick, shine"
@@ -869,7 +929,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             else:
                 intended_words = raw_intended
 
-            # 3. Phase 1: Feature Evaluator
+            # Phase 1: Feature Evaluator
             eval_result = None
             with st.spinner("Phase 1/2: Analyzing orthographic patterns..."):
                 try:
@@ -883,7 +943,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 except Exception as e:
                     st.error(f"Error during feature evaluation: {str(e)}")
 
-            # 4. Phase 2: AI Logic Engine
+            # Phase 2: AI Logic Engine
             with st.spinner("Phase 2/2: Prescriptive Learning Analytics..."):
                 try:
                     current_assessment_id = st.session_state.get('assessment_id', None)
@@ -891,11 +951,45 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                     analysis_result = spelling_logic.process_full_assessment(
                         student_id=student_id,
                         assessment_id=current_assessment_id,
-                        transcriptions=transcribed_words,      # Updated variable name
-                        intended_words=intended_words,          # Updated variable name
-                        evaluator_result=eval_result
+                        transcriptions=transcribed_words,
+                        intended_words=intended_words,
+                        evaluator_result=eval_result,
+                        teacher_id=current_teacher_email
                     )
+
+                    analysis_result = process_assessment_response(
+                        response_data=analysis_result,
+                        student_name=student_name,
+                        raw_student_id=student_id
+                    )
+
                     st.session_state["analysis_result"] = analysis_result
+
+                    ai_notes = ""
+                    ai_target = "g1"
+                    if isinstance(analysis_result, dict):
+                        ai_notes = (
+                            analysis_result.get("prescriptive_feedback") 
+                            or analysis_result.get("teacher_notes") 
+                            or analysis_result.get("notes") 
+                            or ""
+                        )
+                        ai_target = analysis_result.get("suggested_next", "g1") or analysis_result.get("phonetic_stage_level", "g1")
+                    elif analysis_result:
+                        ai_notes = getattr(analysis_result, "teacher_notes", "") or getattr(analysis_result, "notes", "")
+                        ai_target = getattr(analysis_result, "suggested_next", "g1") or getattr(analysis_result, "phonetic_stage_level", "g1")
+
+                    if ai_notes:
+                        # 1. Preserve the raw markdown with bolding for reports
+                        st.session_state["raw_report_notes"] = ai_notes
+                        # 2. Store clean plain-text (no asterisks) for the teacher's text area
+                        st.session_state["final_diagnostic_notes"] = clean_ai_formatting(ai_notes)
+
+                    st.session_state["targets_display"] = [ai_target]
+
+                    if "teacher_refined_group" in st.session_state:
+                        del st.session_state["teacher_refined_group"]
+
                     st.success("Orthographic analysis completed successfully!")
                 except Exception as logic_err:
                     st.error(f"Logic Engine Execution Failed: {logic_err}")
@@ -903,113 +997,85 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     # -----------------------------------------------------------------------------
     # STAGE 3: DISPLAY (DIAGNOSTIC VISUAL MATRIX & COMPARISON)
     # -----------------------------------------------------------------------------
+    # -----------------------------------------------------------------------------
+    # STAGE 3: DISPLAY (DIAGNOSTIC VISUAL MATRIX & COMPARISON)
+    # -----------------------------------------------------------------------------
     if st.session_state.get("analysis_result") or st.session_state.get("evaluator_result"):
         st.markdown("---")
-        st.subheader("Stage 3: Display (Diagnostic Insights)")
+        
+        # 1. Render G0-G8 Stage Accuracy Chart & Feature Badges
+        eval_data = st.session_state.get("evaluator_result")
+        if eval_data and isinstance(eval_data, dict):
+            render_orthographic_analysis(eval_data)
 
-        col_disp1, col_disp2 = st.columns([1, 1])
+        # 2. Render Side-by-Side Attempt List
+        st.markdown("### Side-by-Side Attempt Analysis")
+        highlighted_content = ""
+        if st.session_state.get("processed_intended_words") and st.session_state.get('student_attempts_for_report'):
+            intended_words_raw = st.session_state.get("processed_intended_words", "")
+            student_attempts_raw = st.session_state.get('student_attempts_for_report') or st.session_state.get('student_attempts_raw', '')
 
-        with col_disp1:
-            st.markdown("**Side-by-Side Attempt Analysis**")
-            highlighted_content = ""
-            if st.session_state.get("processed_intended_words") and st.session_state.get('student_attempts_for_report'):
-                intended_words_raw = st.session_state.get("processed_intended_words", "")
-                student_attempts_raw = st.session_state.get('student_attempts_for_report') or st.session_state.get('student_attempts_raw', '')
-
-                # 1. Parse intended words safely into a list
-                if isinstance(intended_words_raw, list):
-                    intended_list = [str(w).strip().lower() for w in intended_words_raw if str(w).strip()]
-                elif isinstance(intended_words_raw, str):
-                    intended_list = [w.strip().lower() for w in intended_words_raw.replace(',', '\n').split('\n') if w.strip()]
-                else:
-                    intended_list = []
-
-                # 2. Parse student attempts safely into a list
-                if isinstance(student_attempts_raw, list):
-                    attempts_list = [
-                        item.get("attempt") or item.get("word") or item.get("text") or str(item)
-                        if isinstance(item, dict) else str(item)
-                        for item in student_attempts_raw
-                    ]
-                elif isinstance(student_attempts_raw, str):
-                    attempts_list = [
-                        line.strip() 
-                        for line in student_attempts_raw.replace(',', '\n').split('\n') 
-                        if line.strip()
-                    ]
-                else:
-                    attempts_list = []
-
-                # 3. Clean attempt strings (strip numbering/prefixes)
-                import re
-                attempts_raw = []
-                for line in attempts_list:  # <-- CHANGED FROM raw_lines TO attempts_list
-                    cleaned_line = str(line).strip().lower()
-                    if not cleaned_line:
-                        continue
-                    if ":" in cleaned_line:
-                        student_word = cleaned_line.split(":", 1)[1].strip()
-                    else:
-                        student_word = re.sub(r'^\d+[\.\-\s)]+', '', cleaned_line).strip()
-                    if student_word:
-                        attempts_raw.append(student_word)
-
-                # 4. Compare side-by-side
-                min_len = min(len(intended_list), len(attempts_raw))
-                highlighted_content += "<ul style='list-style-type: none; padding-left: 0; margin: 0; font-family: monospace;'>"
-                for i in range(min_len):
-                    target = intended_list[i]
-                    attempt = attempts_raw[i]
-                    if attempt == target:
-                        highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: <span style='color:#5cb85c; font-weight:bold;'>{attempt} ✓</span></li>"
-                    else:
-                        highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: <span style='color:#d9534f; font-weight:bold;'>{attempt}</span></li>"
-
-                if len(attempts_raw) > min_len:
-                    for i in range(min_len, len(attempts_raw)):
-                        highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. Extra: <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span></li>"
-                highlighted_content += "</ul>"
+            if isinstance(intended_words_raw, list):
+                intended_list = [str(w).strip().lower() for w in intended_words_raw if str(w).strip()]
+            elif isinstance(intended_words_raw, str):
+                intended_list = [w.strip().lower() for w in intended_words_raw.replace(',', '\n').split('\n') if w.strip()]
             else:
-                highlighted_content = "*No comparative data parsed.*"
+                intended_list = []
 
-            st.markdown(
-                f"""<div style="background-color: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; color: #f0f2f6; line-height: 1.6;">
-                {highlighted_content}
-                </div>""",
-                unsafe_allow_html=True
-            )
-
-        with col_disp2:
-            st.markdown("**Evaluated Feature Matrix ($G0\\text{--}G8$)**")
-            
-            eval_data = st.session_state.get("evaluator_result")
-            if eval_data and isinstance(eval_data, dict) and "scores" in eval_data:
-                st.caption("Deterministic Blueprint Scores:")
-                for feature_key, score_val in eval_data["scores"].items():
-                    group_info = constants.DIAGNOSTIC_GROUPS.get(feature_key, {}).get('name', feature_key)
-                    st.write(f"- **{feature_key.upper()}** ({group_info}): `{score_val}`")
+            if isinstance(student_attempts_raw, list):
+                attempts_list = [
+                    item.get("attempt") or item.get("word") or item.get("text") or str(item)
+                    if isinstance(item, dict) else str(item)
+                    for item in student_attempts_raw
+                ]
+            elif isinstance(student_attempts_raw, str):
+                attempts_list = [line.strip() for line in student_attempts_raw.replace(',', '\n').split('\n') if line.strip()]
             else:
-                analysis_obj = st.session_state.get('analysis_result')
-                if analysis_obj:
-                    keys_to_check = [
-                        ('g0', 'g0_phonemic_awareness'), ('g1', 'g1_cvc_mapping'),
-                        ('g2', 'g2_digraphs'), ('g3', 'g3_silent_e'),
-                        ('g4', 'g4_vowel_teams'), ('g5', 'g5_r_controlled'),
-                        ('g6', 'g6_clusters'), ('g7', 'g7_multisyllabic'),
-                        ('g8', 'g8_reduction_morphology')
-                    ]
-                    for short_k, long_k in keys_to_check:
-                        val = getattr(analysis_obj, long_k, None) if not isinstance(analysis_obj, dict) else analysis_obj.get(long_k, None)
-                        if val is not None:
-                            group_name = constants.DIAGNOSTIC_GROUPS.get(short_k, {}).get('name', 'Feature')
-                            st.write(f"- **{short_k.upper()}** ({group_name}): `{val}`")
+                attempts_list = []
+
+            import re
+            attempts_raw = []
+            for line in attempts_list:
+                cleaned_line = str(line).strip().lower()
+                if not cleaned_line:
+                    continue
+                if ":" in cleaned_line:
+                    student_word = cleaned_line.split(":", 1)[1].strip()
+                else:
+                    student_word = re.sub(r'^\d+[\.\-\s)]+', '', cleaned_line).strip()
+                if student_word:
+                    attempts_raw.append(student_word)
+
+            min_len = min(len(intended_list), len(attempts_raw))
+            highlighted_content += "<ul style='list-style-type: none; padding-left: 0; margin: 0; font-family: monospace;'>"
+            for i in range(min_len):
+                target = intended_list[i]
+                attempt = attempts_raw[i]
+                if attempt == target:
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: <span style='color:#5cb85c; font-weight:bold;'>{attempt} ✓</span></li>"
+                else:
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. {target}: <span style='color:#d9534f; font-weight:bold;'>{attempt}</span></li>"
+
+            if len(attempts_raw) > min_len:
+                for i in range(min_len, len(attempts_raw)):
+                    highlighted_content += f"<li style='margin-bottom: 6px;'>{i+1}. Extra: <span style='color:#d9534f; font-weight:bold;'>{attempts_raw[i]}</span></li>"
+            highlighted_content += "</ul>"
+        else:
+            highlighted_content = "*No comparative data parsed.*"
+
+        st.markdown(
+            f"""<div style="background-color: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; color: #f0f2f6; line-height: 1.6;">
+            {highlighted_content}
+            </div>""",
+            unsafe_allow_html=True
+        )
 
     # -----------------------------------------------------------------------------
     # STAGE 4: OVERRIDE UI (TEACHER REFINEMENT & CALIBRATION SAVE)
     # -----------------------------------------------------------------------------
     if st.session_state.get("analysis_result"):
         st.markdown("---")
-        st.subheader("Stage 4: Override UI (Teacher Calibration & Refinement)")
+        st.subheader("Stage 4: AI Diagnosis (Teachers can adjust and refine when necessary)")
         st.caption("Review AI diagnostic recommendations, log blind spots, and confirm final student placement.")
 
         group_keys = list(constants.DIAGNOSTIC_GROUPS.keys())
@@ -1030,9 +1096,8 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         col_ovr1, col_ovr2 = st.columns(2)
         with col_ovr1:
             st.selectbox(
-                "Override Focus Group Assignment:",
+                "AI Group Assignment (modifiable):",
                 options=group_keys,
-                index=group_keys.index(st.session_state.teacher_refined_group),
                 format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
                 key="teacher_refined_group"
             )
@@ -1047,14 +1112,37 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             key=f"logic_feedback_{student_id}"
         )
 
+        # ---------------------------------------------------------------------
+        # PLACEMENT HERE: Extract AI output & prepare dual storage for notes
+        # ---------------------------------------------------------------------
+        if isinstance(analysis_obj, dict):
+            raw_feedback = (
+                analysis_obj.get("prescriptive_feedback") 
+                or analysis_obj.get("teacher_notes") 
+                or analysis_obj.get("notes") 
+                or ""
+            )
+        else:
+            raw_feedback = (
+                getattr(analysis_obj, "prescriptive_feedback", None) 
+                or getattr(analysis_obj, "teacher_notes", "") 
+                or ""
+            )
+
+        # 1. Preserve raw Markdown for rich-text reports
+        st.session_state["raw_report_notes"] = raw_feedback
+
+        # 2. Pre-populate clean plain text for editing IF NOT ALREADY SET/EDITED
+        if "final_diagnostic_notes" not in st.session_state or not st.session_state["final_diagnostic_notes"]:
+            st.session_state["final_diagnostic_notes"] = clean_ai_formatting(raw_feedback)
+
         st.text_area(
-            "Final Diagnostic Gold-Standard Notes",
-            value=st.session_state.get('final_diagnostic_notes', ''),
+            "Final Diagnostic Notes (modifiable)",
             height=250,
             key="final_diagnostic_notes"
         )
 
-        if st.button("Confirm Overrides & Persist to Database", key=f"save_btn_{student_id}", type="primary", use_container_width=True):
+        if st.button("Confirm & Send to Database", key=f"save_btn_{student_id}", type="primary", use_container_width=True):
             student_attempts_raw = st.session_state.get('student_attempts_for_report', "")
             final_group = st.session_state.get("teacher_refined_group", 'g1')
             teacher_feedback = st.session_state.get(f"logic_feedback_{student_id}", "")
@@ -1105,15 +1193,14 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
 
             if db.save_assessment(
                 assessment_data_obj,
+                student_id=student_id,
                 raw_text=student_attempts_raw,
                 teacher_id=resolved_teacher_email,
                 teacher_refinement=refined_notes_with_header,
-                struggling_words=getattr(
-                    st.session_state.get("analysis_result"),
-                    "struggling_words",
-                    ""
-                )
+                struggling_words=getattr(st.session_state.get("analysis_result"), "struggling_words", ""),
+                test_name=assessment_name,   # <-- add this
             ):
+                # 1. Ingest calibration data as before
                 original_notes = getattr(st.session_state.get('analysis_result'), 'teacher_notes', '')
                 ai_suggested_list_for_calibration = st.session_state.get('targets_display', [])
                 ai_suggested_group_for_calibration = ai_suggested_list_for_calibration[0] if ai_suggested_list_for_calibration else 'Unassigned'
@@ -1128,10 +1215,27 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                     refined_notes=refined_notes_with_header
                 )
 
+                st.toast("Assessment saved and calibration logged!")
                 st.success("Assessment saved and calibration logged successfully!")
+                time.sleep(1)
 
+                # Clean up state ON SUCCESS so UI resets to default state
                 for key in [
-                    f"edited_transcription_{student_id}", "final_diagnostic_notes",
+                    f"edited_transcription_{student_id}", "final_diagnostic_notes", "raw_report_notes",
+                    f"logic_feedback_{student_id}", "analysis_result", "evaluator_result",
+                    "g_scores_display", "targets_display", "processed_intended_words",
+                    f"uploaded_file_cache_{student_id}", "teacher_refined_group", "student_attempts_for_report"
+                ]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+
+                st.rerun()
+            else:
+                st.error("Failed to save assessment. Please check terminal logs.")
+
+                # ADDED "raw_report_notes" to cleanup list so it resets on save
+                for key in [
+                    f"edited_transcription_{student_id}", "final_diagnostic_notes", "raw_report_notes",
                     f"logic_feedback_{student_id}", "analysis_result", "evaluator_result",
                     "g_scores_display", "targets_display", "processed_intended_words",
                     f"uploaded_file_cache_{student_id}", "teacher_refined_group"
@@ -1210,28 +1314,16 @@ def render_orthographic_analysis(evaluation_result: dict):
     st.markdown("---")
 
     # ---------------------------------------------------------
-    # 3. VISUAL CHART & NUMERICAL BREAKDOWN (G0 - G8)
+    # 3. VISUAL CHART & NUMERICAL BREAKDOWN (G0 - G9)
     # ---------------------------------------------------------
-    st.markdown("### Stage Accuracy Profile (G0 - G8)")
+    st.markdown("### Stage Accuracy Profile (G0 - G9)")
 
     if active_group_data:
         df_groups = pd.DataFrame(active_group_data)
 
-        col_chart, col_table = st.columns([3, 2])
-
-        with col_chart:
-            st.caption("Feature Accuracy Profile (%)")
-            chart_df = df_groups.set_index("Group")[["Accuracy (%)"]]
-            st.bar_chart(chart_df, height=260)
-
-        with col_table:
-            st.caption("Numerical Breakdown")
-            for item in active_group_data:
-                status_flag = "[MASTERED]" if item["Accuracy (%)"] >= 90.0 else "[FOCUS]"
-                st.write(
-                    f"**{item['Group']}** ({item['Group Name']}): "
-                    f"**{item['Accuracy (%)']}%** ({item['Earned']}/{item['Total']}) {status_flag}"
-                )
+        st.caption("Feature Accuracy Profile (%)")
+        chart_df = df_groups.set_index("Group")[["Accuracy (%)"]]
+        st.bar_chart(chart_df, height=260)
     else:
         st.info("No diagnostic feature targets found in the attempted words.")
 
@@ -1240,7 +1332,7 @@ def render_orthographic_analysis(evaluation_result: dict):
     # =========================================================
     # 3-4. GRANULAR WORD-BY-WORD FEATURE BADGES
     # =========================================================
-    st.markdown("### 🔍 Word-by-Word Feature Breakdown")
+    st.markdown("### Word-by-Word Feature Breakdown")
 
     for word_eval in word_evals:
         intended = word_eval.get("intended_word", "")

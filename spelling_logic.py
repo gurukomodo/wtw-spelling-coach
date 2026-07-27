@@ -2,9 +2,8 @@ import os
 import json
 import re
 import time
-import litellm
+from model_manager import run_model_chain
 from dotenv import load_dotenv
-from litellm import completion
 from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -140,87 +139,83 @@ def transcribe_handwriting(image_base64: str, intended_words: str = "") -> list[
         "1 | fun | fun\n"
         "12 | blade | blad\n"
         "14 | fright | frite\n\n"
-        "CRITICAL: Do NOT include preamble, thinking tags, or extra commentary. Return ONLY the formatted lines."
+        "CRITICAL: Do NOT include preamble, markdown table headers, or extra commentary. Return ONLY the formatted lines."
     )
 
-    # Full multi-provider fallback chain
-    vision_models = [
-        {"model": "gemini/gemini-2.0-flash", "api_key": os.getenv("GEMINI_API_KEY")},
-        {"model": "groq/qwen/qwen3.6-27b", "api_key": os.getenv("GROQ_API_KEY")},
-        {"model": "mistral/pixtral-12b-2409", "api_key": os.getenv("MISTRAL_API_KEY")},
-        {"model": "mistral/mistral-medium-3.5", "api_key": os.getenv("MISTRAL_API_KEY")},
+    messages = [
         {
-            "model": "openai/Qwen/Qwen2.5-VL-72B-Instruct",
-            "api_key": os.getenv("OVH_API_KEY"),
-            "api_base": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
-        },
-        {"model": "openrouter/qwen/qwen-2.5-vl-72b-instruct:free", "api_key": os.getenv("OPENROUTER_API_KEY")},
-        {"model": "openrouter/google/gemini-2.0-flash-exp:free", "api_key": os.getenv("OPENROUTER_API_KEY")},
-        {"model": "huggingface/meta-llama/Llama-3.2-11B-Vision-Instruct", "api_key": os.getenv("HF_API_KEY")},
-        {"model": "huggingface/Qwen/Qwen2.5-VL-7B-Instruct", "api_key": os.getenv("HF_API_KEY")},
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                }
+            ]
+        }
     ]
 
-    for config in vision_models:
-        api_key = config.get("api_key")
-        if not api_key:
-            continue  # Skip models whose keys aren't exported in the environment
+    # Delegate OCR call to model manager
+    raw_response = run_model_chain(task_type="vision", messages=messages, temperature=0.0)
 
-        try:
-            kwargs = {
-                "model": config["model"],
-                "api_key": api_key,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                            }
-                        ]
-                    }
-                ],
-                "temperature": 0.0,
-                "max_tokens": 1000,
-                "timeout": 25
-            }
+    if not raw_response:
+        raise RuntimeError("All configured OCR vision models failed in model_manager.")
 
-            if "api_base" in config:
-                kwargs["api_base"] = config["api_base"]
+    print(f"\n--- [DEBUG: RAW OCR MODEL OUTPUT] ---\n{raw_response}\n------------------------------------\n")
 
-            response = litellm.completion(**kwargs)
-            cleaned_text = clean_ocr_text(response.choices[0].message.content)
+    cleaned_text = clean_ocr_text(raw_response)
 
-            # Parse line by line into structured pairs
-            parsed_results = []
-            for line in cleaned_text.splitlines():
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) == 3:
-                    parsed_results.append({
-                        "number": parts[0],
-                        "intended": parts[1],
-                        "attempt": parts[2]
-                    })
-            
-            if parsed_results:
-                return parsed_results
-
-        except Exception as e:
-            print(f"[OCR Warning] Model {config['model']} failed -> {e}")
+    parsed_results = []
+    for line in cleaned_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("---"):
             continue
 
-    raise RuntimeError("All configured OCR vision models failed. Check your API keys in environment variables.")
+        # Strip outer pipes if model formatted as markdown table "| 1 | word | attempt |"
+        if line.startswith("|") and line.endswith("|"):
+            line = line[1:-1].strip()
+
+        parts = [p.strip() for p in line.split("|")]
+
+        # Skip header rows
+        if len(parts) >= 3 and parts[0].lower() in ["number", "#", "no", "item"]:
+            continue
+
+        if len(parts) == 3:
+            parsed_results.append({
+                "number": parts[0],
+                "intended": parts[1],
+                "attempt": parts[2]
+            })
+        else:
+            # Fallback regex for formats like "1. blade: blad" or "blade -> blad"
+            match = re.match(r'^(?:\d+[\.\)]|\*|-)?\s*(\d+)?\s*\|?\s*([a-zA-Z\'\-]+)\s*[:=\|\-\>]+\s*([a-zA-Z\'\-]+)$', line)
+            if match:
+                num, target, attempt = match.groups()
+                parsed_results.append({
+                    "number": num if num else str(len(parsed_results) + 1),
+                    "intended": target,
+                    "attempt": attempt
+                })
+
+    return parsed_results
 
 
 def process_full_assessment(
-    student_id, assessment_id, transcriptions, intended_words=None, evaluator_result=None
+    student_id, assessment_id, transcriptions, intended_words=None, evaluator_result=None, teacher_id=None
 ):
     """Orchestrates Granular Orthographic Analysis + Prescriptive AI Analysis."""
     if isinstance(transcriptions, list) and transcriptions:
         if isinstance(transcriptions[0], dict):
-            intended_list = [item.get("intended_word", "").strip() for item in transcriptions]
-            transcribed_list = [item.get("student_attempt", "").strip() for item in transcriptions]
+            # Check for both key naming conventions so data is never lost
+            intended_list = [
+                (item.get("intended_word") or item.get("intended") or "").strip() 
+                for item in transcriptions
+            ]
+            transcribed_list = [
+                (item.get("student_attempt") or item.get("attempt") or "").strip() 
+                for item in transcriptions
+            ]
         else:
             transcribed_list = transcriptions
             intended_list = intended_words if intended_words is not None else []
@@ -248,32 +243,52 @@ def process_full_assessment(
         print(f"[DB Warning] Failed to save assessment results: {db_err}")
 
     summary_prompt = f"""
-    Analyze these spelling assessment feature results for Student ID {student_id}:
+    You are an expert primary school literacy coach.
+
+    Analyze these spelling assessment feature results for [Student]:
     {feature_results}
+
+    RULES:
+    - Always refer to the child as '[Student]' in your commentary.
+    - Provide clear, actionable feedback for the teacher.
     
+    TASK:
     Provide a concise, 3-bullet-point prescriptive coaching guide for the teacher focusing on orthographic patterns, core gaps, and immediate next steps.
     """
-
-    prescriptive_feedback = ""
-    try:
-        res = completion(
-            model="gemini/gemini-1.5-flash",
-            api_key=get_api_key("gemini"),
-            messages=[{"role": "user", "content": summary_prompt}],
-            temperature=0.3,
-        )
-        prescriptive_feedback = res.choices[0].message.content
-        db.log_model_event("gemini/gemini-1.5-flash", "success", action="prescriptive_analysis")
-    except Exception as e:
-        print(f"[Prescriptive Analysis Warning] LLM failed: {e}")
-        prescriptive_feedback = "Assessment recorded successfully. Feature analysis completed."
+    prescriptive_feedback = run_model_chain(
+        task_type="text",
+        messages=[{"role": "user", "content": summary_prompt}],
+        temperature=0.3
+    ) or "Assessment recorded successfully. Feature analysis completed."
 
     return {
         "feature_results": feature_results,
         "prescriptive_feedback": prescriptive_feedback,
     }
 
+def process_assessment_response(response_data, student_name: str, raw_student_id: str):
+    """
+    Cleans up LLM JSON/dict responses:
+    - Replaces '[Student]' placeholders with student_name for UI display.
+    - Preserves raw_student_id under 'student_id' for backend database storage.
+    """
+    def replace_placeholder(obj):
+        if isinstance(obj, str):
+            return obj.replace("[Student]", student_name)
+        elif isinstance(obj, list):
+            return [replace_placeholder(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: replace_placeholder(v) for k, v in obj.items()}
+        return obj
 
+    if isinstance(response_data, dict):
+        formatted_data = replace_placeholder(response_data)
+        formatted_data["student_id"] = raw_student_id
+        return formatted_data
+    elif isinstance(response_data, str):
+        return response_data.replace("[Student]", student_name)
+    
+    return response_data
 # --- 4. QUALITATIVE AI DIAGNOSIS ENGINE ---
 def diagnose_errors(
     student_id: str,
@@ -288,7 +303,7 @@ def diagnose_errors(
     try:
         teacher_notes = db.get_latest_teacher_notes(student_id)
     except Exception as e:
-        print(f"Notice: Could not retrieve teacher notes for {student_id}: {e}")
+        print(f"Notice: Could not retrieve teacher notes for [Student]: {e}")
 
     notes_context = f"\nPREVIOUS TEACHER NOTES FOR THIS STUDENT:\n{teacher_notes}\n" if teacher_notes else ""
 
@@ -309,45 +324,46 @@ def diagnose_errors(
     feature_summary_str = json.dumps(feature_summary, indent=2)
 
     prompt = f"""
-You are an expert literacy specialist and reading coach evaluating a student's Primary Spelling Inventory (PSI) assessment.
+        You are an expert literacy specialist and reading coach evaluating a student's Primary Spelling Inventory (PSI) assessment.
 
-CRITICAL INSTRUCTION:
-Do NOT recalculate total scores or re-evaluate right/wrong answers. The deterministic evaluation engine has already scored this assessment.
-Focus strictly on qualitative pedagogical diagnosis, stage level placement, and teacher coaching recommendations.
+        CRITICAL INSTRUCTION:
+        Do NOT recalculate total scores or re-evaluate right/wrong answers. The deterministic evaluation engine has already scored this assessment.
+        Focus strictly on qualitative pedagogical diagnosis, stage level placement, and teacher coaching recommendations.
 
-=== DETERMINISTIC EVALUATION DATA ===
-- Overall Score: {total_score} / {max_score}
-- Feature Summary (G0-G8 Performance Matrix):
-{feature_summary_str}
+        === DETERMINISTIC EVALUATION DATA ===
+        - Overall Score: {total_score} / {max_score}
+        - Feature Summary (G0-G8 Performance Matrix):
+        {feature_summary_str}
 
-- Word-by-Word Analysis:
-{word_details_str}
-{notes_context}
-ANALYSIS COMPLEXITY: {analysis_complexity}
+        - Word-by-Word Analysis:
+        {word_details_str}
+        {notes_context}
+        ANALYSIS COMPLEXITY: {analysis_complexity}
 
-=== FORMATTING RULES ===
-- When referring to a SOUND (Phoneme), use slashes (e.g., /θ/, /d/, /st/).
-- When referring to a WRITTEN LETTER or PATTERN (Grapheme), use angle brackets (e.g., <th>, <ed>, <st>).
+        === FORMATTING RULES ===
+        - When referring to a SOUND (Phoneme), use slashes (e.g., /θ/, /d/, /st/).
+        - When referring to a WRITTEN LETTER or PATTERN (Grapheme), use angle brackets (e.g., <th>, <ed>, <st>).
 
-Respond ONLY with a valid JSON object matching this structure:
-{{
-  "student_id": "{student_id}",
-  "diagnostic_summary": "2-3 sentence overview of error patterns, phonological vs orthographic issues, and strengths.",
+        Respond ONLY with a valid JSON object matching this structure:
+{
+  "student_id": "[Student]",
+  "diagnostic_summary": "2-3 sentence overview of [Student]'s error patterns, phonological vs orthographic issues, and strengths.",
   "phonetic_stage_level": "Name of developmental spelling stage (Emergent, Letter Name - Alphabetic, Within Word Pattern, Syllables & Affixes, Derivational Relations)",
   "recommended_focus_areas": ["Focus area 1", "Focus area 2"],
   "coaching_tips": ["Actionable mini-lesson or classroom strategy 1", "Actionable strategy 2"]
-}}
+}
 """
 
     try:
-        response = completion(
-            model="gemini/gemini-1.5-flash",
-            api_key=get_api_key("gemini"),
+        raw_output = run_model_chain(
+            task_type="text",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            temperature=0.2
         )
-        raw_output = response.choices[0].message.content.strip()
+        if not raw_output:
+            raise ValueError("No response from model manager")
 
+        raw_output = raw_output.strip()
         if raw_output.startswith("```json"):
             raw_output = raw_output.split("```json")[1].split("```")[0].strip()
         elif raw_output.startswith("```"):
@@ -366,6 +382,7 @@ Respond ONLY with a valid JSON object matching this structure:
         }
 
 
+# --- 5. HOLISTIC COACHING REPORT ---
 # --- 5. HOLISTIC COACHING REPORT ---
 def get_ai_coaching_report(student_alias, g_level, history=None):
     """Sends holistic student history to Gemini and returns a coaching plan."""
@@ -414,7 +431,7 @@ def get_ai_coaching_report(student_alias, g_level, history=None):
         recent_context = "\n".join(recent_entries) if recent_entries else ""
     
     prompt = f"""
-You are an Un.Box.Ed. coach analyzing a student's spelling trajectory.
+You are an UnBoxEd coach analyzing a student's spelling trajectory.
 
 Student: '{student_alias}'
 Current G-Level: {g_level}
@@ -439,27 +456,18 @@ Provide a coaching report with:
 """
     
     try:
-        response = completion(
-            model="gemini/gemini-1.5-flash",
-            api_key=get_api_key("gemini"),
+        response = run_model_chain(
+            task_type="text",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.3
         )
-        return response.choices[0].message.content
+        return response if response else "AI Coaching currently unavailable."
     except Exception as e:
-        return f"AI Coaching currently unavailable: {str(e)}"
+        print(f"Error generating coaching report: {e}")
+        return "AI Coaching currently unavailable due to an engine error."
 
 
 # --- 6. PERSONALIZED PRACTICE WORD GENERATION ---
-word_generator = Agent(
-    role="Personalized Spelling Word Selector",
-    goal="Generate 10 highly targeted spelling words for a specific student based on their G-level and struggle areas",
-    backstory="You are an expert literacy specialist creating targeted practice lists for ESL/Mandarin L1 learners.",
-    llm="groq/llama-3.3-70b-versatile",
-    allow_delegation=False
-)
-
-
 def generate_personalized_practice_words(
     student_id, target_group, teacher_notes, struggling_words, 
     mastered_words="", unit_description="", custom_words_input=None
@@ -487,36 +495,38 @@ def generate_personalized_practice_words(
     notes_context = f"\nTEACHER NOTES: {teacher_notes}" if teacher_notes else ""
     unit_context = f"\nUNIT DESCRIPTION: {unit_description}" if unit_description else ""
     
-    task_description = f"""
+    prompt = f"""
+You are an expert literacy specialist creating targeted practice lists for ESL/Mandarin L1 learners.
+
 Create a 10-word practice list for {student_alias}.
-Target: {target_group.upper()} - {group_info['name']}
+Target Group: {target_group.upper()} - {group_info['name']}
 Patterns: {group_info['patterns']}
 {notes_context}{struggling_context}{mastered_context}{unit_context}{custom_words_context}
 
 Return ONLY a valid JSON array of 10 strings: ["word1", "word2", ..., "word10"]
+Do NOT include markdown formatting or extra text outside the JSON array.
 """
     
-    task = Task(
-        description=task_description,
-        agent=word_generator,
-        expected_output="JSON array of 10 spelling words"
-    )
-    
-    crew = Crew(agents=[word_generator], tasks=[task])
-    
     try:
-        crew_output = crew.kickoff()
-        output_text = str(crew_output)
+        raw_output = run_model_chain(
+            task_type="text",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
         
-        json_match = re.search(r'\[.*?\]', output_text, re.DOTALL)
-        if json_match:
-            words = json.loads(json_match.group(0))
-            if isinstance(words, list) and len(words) >= 1:
+        if raw_output:
+            json_match = re.search(r'\[.*?\]', raw_output, re.DOTALL)
+            if json_match:
+                words = json.loads(json_match.group(0))
+                if isinstance(words, list) and len(words) >= 1:
+                    return words[:10]
+            
+            cleaned = raw_output.strip('[]').replace('"', '').replace("'", '')
+            words = [w.strip() for w in cleaned.split(',') if w.strip()]
+            if words:
                 return words[:10]
-        
-        cleaned = output_text.strip('[]').replace('"', '').replace("'", '')
-        words = [w.strip() for w in cleaned.split(',') if w.strip()]
-        return words[:10] if words else get_fallback_words(group_key)
+                
+        return get_fallback_words(group_key)
         
     except Exception as e:
         print(f"Word generation error: {e}")
@@ -535,16 +545,13 @@ TEACHER DIRECT FEEDBACK: {teacher_direct_feedback if teacher_direct_feedback els
 Define your specific diagnostic error in 1-2 concise sentences.
 Focus on where your diagnostic process diverged from the teacher's assessment.
 """
-    try:
-        response = completion(
-            model="groq/llama-3.3-70b-versatile",
-            api_key=get_api_key("groq"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"AI self-reflection failed: {str(e)}"
+    response = run_model_chain(
+        task_type="text",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+    return response.strip() if response else "AI self-reflection failed."
+
 
 
 def get_fallback_words(target_group):

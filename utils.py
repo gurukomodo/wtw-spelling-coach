@@ -1,6 +1,7 @@
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 import io
 import base64
+import re
 
 def preprocess_image(uploaded_file):
     img = Image.open(uploaded_file)
@@ -25,3 +26,13 @@ def preprocess_image(uploaded_file):
     img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
     
     return img_str, img  # Return both the string for AI and the object for Streamlit
+
+def clean_ai_formatting(text: str) -> str:
+    """Strips raw Markdown bold asterisks and converts asterisk bullets to clean bullet symbols."""
+    if not text:
+        return ""
+    # Remove bold asterisks **text** -> text
+    cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    # Replace starting asterisks/dashes with clean bullet points
+    cleaned = re.sub(r'^\s*[\*\-]\s+', '• ', cleaned, flags=re.MULTILINE)
+    return cleaned.strip()

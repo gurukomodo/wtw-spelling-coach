@@ -38,15 +38,24 @@ class EvaluationResult:
         return asdict(self)
 
 
+CORRUPTING_VOWEL_TEAMS = {
+    "a": ["ai", "ay", "au", "aw", "ea"],
+    "e": ["ea", "ee", "ey", "ei", "eu"],
+    "i": ["ie", "igh"],
+    "o": ["ou", "ow", "oa", "oi", "oo", "oy"],
+    "u": ["ui", "ue", "ou"],
+}
+
 def _check_pattern_in_attempt(attempt: str, pattern: str) -> bool:
     """
     Checks if a specific feature pattern or grapheme is present in the student's attempt.
-    Handles split vowel patterns (e.g., 'o_e' -> checks for 'o' followed later by 'e').
+    Handles split vowel patterns (e.g., 'o_e') and prevents false positives where single
+    short vowels are corrupted into vowel teams/diphthongs or silent-e structures.
     """
     clean_attempt = attempt.lower().strip()
     clean_pattern = pattern.lower().strip()
 
-    # Handle split-vowel / silent-e patterns like 'o_e' or 'a_e'
+    # 1. Handle split-vowel / silent-e patterns like 'o_e' or 'a_e'
     if "_" in clean_pattern:
         parts = clean_pattern.split("_")
         if len(parts) == 2:
@@ -54,7 +63,23 @@ def _check_pattern_in_attempt(attempt: str, pattern: str) -> bool:
             idx = clean_attempt.find(first)
             return idx != -1 and second in clean_attempt[idx + 1:]
 
-    # Standard substring match (e.g., 'sh', 'ch', 'f', 'a')
+    # 2. Short Vowel Validation (a, e, i, o, u)
+    if clean_pattern in CORRUPTING_VOWEL_TEAMS:
+        if clean_pattern not in clean_attempt:
+            return False
+
+        # Fail if the short vowel was mutated into a multi-letter vowel team
+        for team in CORRUPTING_VOWEL_TEAMS[clean_pattern]:
+            if team in clean_attempt:
+                return False
+
+        # Fail if a single short vowel attempt accidentally has a silent 'e' at the end (e.g. 'robe' for 'rob')
+        if len(clean_attempt) > 2 and clean_attempt.endswith("e") and not clean_attempt.endswith("ee"):
+            return False
+
+        return True
+
+    # 3. Standard substring match for consonants, digraphs, and blends (e.g., 'sh', 'ch', 'f')
     return clean_pattern in clean_attempt
 
 

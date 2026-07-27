@@ -38,8 +38,13 @@ def cluster_class_for_assessments(student_levels):
         chunks.append(sorted_levels[i:i+2])
     return chunks
 
-def generate_class_diagnostics(student_levels, words_per_group=3):
-    """Assembles dynamic short-form test profiles based on current class sub-groups."""
+def generate_class_diagnostics(student_levels, total_words=16):
+    """Assembles dynamic test profiles based on current class sub-groups.
+
+    Each generated test targets `total_words` words in total, split as
+    evenly as possible across the g-levels included in its cluster (e.g. a
+    combined G2-G3 test draws 8 words from each level, not 16 from each).
+    """
     clusters = cluster_class_for_assessments(student_levels)
     generated_tests = []
     
@@ -47,13 +52,21 @@ def generate_class_diagnostics(student_levels, words_per_group=3):
         test_id = f"DIAG-{str(uuid.uuid4())[:6].upper()}"
         test_words = []
         feature_map = {}
-        
-        for num in cluster:
+
+        num_levels = len(cluster)
+        base_count = total_words // num_levels
+        remainder = total_words % num_levels
+
+        for i, num in enumerate(cluster):
+            # Give the first `remainder` levels one extra word so the
+            # cluster's total lands on `total_words` even when it doesn't
+            # divide evenly (e.g. 16 words / 3 levels = 6, 5, 5).
+            words_for_this_level = base_count + (1 if i < remainder else 0)
             target_g = f"g{num}"
             available = [w for w, d in constants.PSI_WORD_BANK.items() if target_g in d["features"]]
             
             random.shuffle(available)
-            for word in available[:words_per_group]:
+            for word in available[:words_for_this_level]:
                 if word not in test_words:
                     test_words.append(word)
                     feature_map[word] = constants.PSI_WORD_BANK[word]["features"]
