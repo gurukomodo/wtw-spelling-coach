@@ -19,12 +19,11 @@ __pycache__/\
 .DS_Store\
 \
 # Local environment variables (if you ever use .env files)\
-.env\
 .venv/
-.env
 __pycache__/
 .venv/
 .DS_Store
 student_map.json
 spelling_coach.db
 .aider*
+.env.keys
