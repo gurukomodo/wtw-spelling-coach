@@ -189,7 +189,7 @@ def calculate_group_tallies_and_placement(word_evaluations: List[WordEvaluation]
 
 def evaluate_spelling_attempt(
     student_id: str,
-    transcribed_words: List[str],
+    transcribed_words: List,
     intended_words: List[str],
     word_bank: Optional[Dict[str, Any]] = None,
     test_date: Optional[str] = None,
@@ -197,6 +197,12 @@ def evaluate_spelling_attempt(
     """
     Main evaluation function called by app.py.
     Compares transcribed student attempts against intended words using PSI_WORD_BANK.
+    
+    Args:
+        transcribed_words: Can be either:
+            - List of dicts with 'number', 'intended', 'attempt' keys (number-aware)
+            - List of strings (legacy positional alignment)
+        intended_words: List of target words in order (1-based index corresponds to item number)
     """
     if word_bank is None:
         word_bank = PSI_WORD_BANK
@@ -207,16 +213,51 @@ def evaluate_spelling_attempt(
     word_evaluations: List[WordEvaluation] = []
     total_score = 0
 
-    for intended, attempt in zip(intended_words, transcribed_words):
-        clean_key = intended.strip().lower()
-        word_info = word_bank.get(clean_key, {"features": {}})
+    # Check if transcribed_words contains number-aware dict structure
+    is_numbered = (
+        transcribed_words and 
+        isinstance(transcribed_words[0], dict) and 
+        'number' in transcribed_words[0]
+    )
 
-        # Evaluate single word
-        word_eval = evaluate_single_word(intended, attempt, word_info)
-        word_evaluations.append(word_eval)
+    if is_numbered:
+        # Number-aware alignment: map attempts by item number to intended words
+        attempts_by_number = {}
+        for item in transcribed_words:
+            if isinstance(item, dict):
+                num_str = str(item.get('number', '')).strip()
+                if num_str.isdigit():
+                    attempts_by_number[int(num_str)] = item
+        
+        # Iterate through intended words by 1-based index
+        for idx, intended in enumerate(intended_words, start=1):
+            item_num = idx
+            attempt_item = attempts_by_number.get(item_num, {})
+            
+            if isinstance(attempt_item, dict):
+                attempt = attempt_item.get('attempt') or attempt_item.get('word') or ''
+            else:
+                attempt = str(attempt_item) if attempt_item else ''
+            
+            clean_key = intended.strip().lower()
+            word_info = word_bank.get(clean_key, {"features": {}})
 
-        if word_eval.is_correct:
-            total_score += 1
+            word_eval = evaluate_single_word(intended, attempt, word_info)
+            word_evaluations.append(word_eval)
+
+            if word_eval.is_correct:
+                total_score += 1
+    else:
+        # Legacy positional alignment (backward compatibility)
+        for intended, attempt in zip(intended_words, transcribed_words):
+            clean_key = intended.strip().lower()
+            word_info = word_bank.get(clean_key, {"features": {}})
+
+            word_eval = evaluate_single_word(intended, attempt, word_info)
+            word_evaluations.append(word_eval)
+
+            if word_eval.is_correct:
+                total_score += 1
 
     # Calculate group tallies & 90% threshold placement
     tally_and_placement = calculate_group_tallies_and_placement(word_evaluations)

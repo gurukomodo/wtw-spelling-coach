@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 import os
 import csv
 import hashlib
@@ -122,6 +122,20 @@ def init_db():
         )
     ''')
 
+    # New table for Student Practice Lists
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_practice_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id TEXT NOT NULL,
+            teacher_id TEXT NOT NULL,
+            list_name TEXT NOT NULL,
+            group_title TEXT,
+            words TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES student_identity(student_id)
+        )
+    ''')
+
     conn.commit()
 
     # 2. Schema Repair / Migration
@@ -217,7 +231,45 @@ def repair_schema(cursor):
 # ASSESSMENT SAVING ENGINE
 # ============================================================
 
-def save_assessment(assessment_data, student_id=None, raw_text=None, teacher_id=None, teacher_refinement=None, struggling_words=None, test_name=None):
+def update_assessment(assessment_id, test_date=None, test_name=None, teacher_notes=None, suggested_next=None):
+    """Updates an existing assessment record."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Build dynamic update query
+        fields = []
+        params = []
+        
+        if test_date:
+            fields.append("test_date = ?")
+            params.append(test_date)
+        if test_name is not None:
+            fields.append("test_name = ?")
+            params.append(test_name)
+        if teacher_notes is not None:
+            fields.append("teacher_refined_notes = ?")
+            params.append(teacher_notes)
+        if suggested_next:
+            fields.append("suggested_next = ?")
+            params.append(suggested_next)
+            
+        if not fields:
+            return False
+            
+        params.append(assessment_id)
+        query = f"UPDATE assessments SET {', '.join(fields)} WHERE id = ?"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating assessment: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def save_assessment(assessment_data, student_id=None, raw_text=None, teacher_id=None, teacher_refinement=None, struggling_words=None, test_name=None, test_date=None):
     """Saves assessment data to SQLite with explicit student_id and UI return status."""
     
     # 1. Sanitize raw_text and struggling_words for SQLite
@@ -237,6 +289,15 @@ def save_assessment(assessment_data, student_id=None, raw_text=None, teacher_id=
         resolved_student_id = resolved_student_id or assessment_data.get('student_id')
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Use provided test_date or default to today
+    if test_date:
+        if isinstance(test_date, date):
+            test_date_str = test_date.strftime("%Y-%m-%d")
+        else:
+            test_date_str = str(test_date)
+    else:
+        test_date_str = now.split()[0]  # Just the date part
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -256,7 +317,7 @@ def save_assessment(assessment_data, student_id=None, raw_text=None, teacher_id=
         ''', (
             resolved_student_id,
             teacher_id,
-            now,
+            test_date_str,
             now,
             raw_text_db,
             teacher_refinement,
@@ -779,21 +840,51 @@ def get_database_stats():
 
 def get_all_students_for_allocation():
     """Fetches all students alongside their assigned teacher details for allocation."""
+    # First sync identity from assessments to ensure data is current
+    try:
+        sync_identity_from_assessments()
+    except:
+        pass  # Continue even if sync fails
+    
     with get_db_connection() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
-                s.id AS student_id,
-                s.name AS student_name,
-                s.grade,
-                s.teacher_id,
-                t.name AS teacher_name
-            FROM students s
-            LEFT JOIN teachers t ON s.teacher_id = t.id
-            ORDER BY s.name ASC
+                si.student_id,
+                si.real_name AS name,
+                si.teacher_id,
+                si.current_group_focus
+            FROM student_identity si
+            ORDER BY si.real_name ASC
         """)
-        return [dict(row) for row in cursor.fetchall()]
+        students = [dict(row) for row in cursor.fetchall()]
+    
+    # If no students found in database, try to sync from CSV as fallback
+    if not students:
+        try:
+            import os
+            if os.path.exists("students.csv"):
+                import_result = import_from_csv("students.csv")
+                if import_result and import_result.get('students', 0) > 0:
+                    # Retry query after CSV import
+                    with get_db_connection() as conn:
+                        conn.row_factory = sqlite3.Row
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT 
+                                si.student_id,
+                                si.real_name AS name,
+                                si.teacher_id,
+                                si.current_group_focus
+                            FROM student_identity si
+                            ORDER BY si.real_name ASC
+                        """)
+                        students = [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"CSV fallback failed: {e}")
+    
+    return students
 
 
 def update_student_teacher(student_id, teacher_id):
@@ -801,12 +892,45 @@ def update_student_teacher(student_id, teacher_id):
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE students
+            UPDATE student_identity
             SET teacher_id = ?
-            WHERE id = ?
+            WHERE student_id = ?
         """, (teacher_id, student_id))
         conn.commit()
         return cursor.rowcount > 0
+
+
+def delete_student(student_id):
+    """
+    Deletes a student record and cleans up associated assessment records.
+    
+    Args:
+        student_id: The student ID to delete
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # Delete associated assessment records
+            cursor.execute("DELETE FROM assessments WHERE student_id = ?", (student_id,))
+            
+            # Delete associated practice lists
+            cursor.execute("DELETE FROM student_practice_lists WHERE student_id = ?", (student_id,))
+            
+            # Delete student identity record
+            cursor.execute("DELETE FROM student_identity WHERE student_id = ?", (student_id,))
+            
+            # Also delete from students table if it exists
+            cursor.execute("DELETE FROM students WHERE id = ?", (student_id,))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting student: {e}")
+            conn.rollback()
+            return False
 
 
 def import_from_csv(file_or_df, teacher_id=None):
@@ -934,7 +1058,8 @@ def delete_assessment(assessment_id):
         cursor.execute("DELETE FROM assessments WHERE id = ?", (assessment_id,))
         conn.commit()
         return cursor.rowcount > 0
-def init_db():
+
+def init_db_v2():
     """Creates core database tables if they do not exist."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -960,7 +1085,7 @@ def init_db():
             )
         """)
         
-        # Assessments table
+        # Assessments table (already created in init_db but this is just for safety)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS assessments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1091,20 +1216,120 @@ def ensure_schema_updated():
 
     conn.close()
 
-# Run schema update on import/init
-ensure_schema_updated()
 
-def delete_assessment(assessment_id):
-    """Deletes an assessment record by its ID."""
+def save_student_practice_list(student_id, teacher_id, list_name, group_title, words_list):
+    """
+    Saves or updates a student practice list.
+    
+    Args:
+        student_id: Student identifier
+        teacher_id: Teacher identifier
+        list_name: Name of the practice list
+        group_title: Optional group title (e.g., "G1: CVC Words")
+        words_list: List of words (will be serialized to JSON)
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if isinstance(words_list, list):
+        words_json = json.dumps(words_list)
+    else:
+        words_json = str(words_list)
+    
     conn = get_db_connection()
     cursor = conn.cursor()
+    
     try:
-        cursor.execute("DELETE FROM assessments WHERE id = ?", (assessment_id,))
+        cursor.execute('''
+            INSERT INTO student_practice_lists (student_id, teacher_id, list_name, group_title, words)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (student_id, teacher_id, list_name, group_title, words_json))
         conn.commit()
         return True
     except Exception as e:
-        print(f"Error deleting assessment {assessment_id}: {e}")
+        print(f"Error saving student practice list: {e}")
         conn.rollback()
         return False
     finally:
         conn.close()
+
+
+def get_student_practice_lists(student_id):
+    """
+    Retrieves all saved practice lists for a given student, ordered by newest first.
+    
+    Args:
+        student_id: Student identifier
+    
+    Returns:
+        List of dicts with keys: id, student_id, teacher_id, list_name, group_title, words (as list), created_at
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute('''
+            SELECT id, student_id, teacher_id, list_name, group_title, words, created_at
+            FROM student_practice_lists
+            WHERE student_id = ?
+            ORDER BY created_at DESC
+        ''', (student_id,))
+        
+        rows = cursor.fetchall()
+        
+        result = []
+        for row in rows:
+            words_json = row[5]
+            try:
+                words_list = json.loads(words_json) if words_json else []
+            except:
+                words_list = words_json.split(',') if words_json else []
+            
+            result.append({
+                'id': row[0],
+                'student_id': row[1],
+                'teacher_id': row[2],
+                'list_name': row[3],
+                'group_title': row[4],
+                'words': words_list,
+                'created_at': row[6]
+            })
+        
+        return result
+    except Exception as e:
+        print(f"Error getting student practice lists: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def delete_student_practice_list(list_id):
+    """
+    Deletes a student practice list by its ID.
+    
+    Args:
+        list_id: The ID of the practice list to delete
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute('''
+            DELETE FROM student_practice_lists
+            WHERE id = ?
+        ''', (list_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        print(f"Error deleting student practice list: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+# Run schema update on import/init
+ensure_schema_updated()

@@ -207,14 +207,23 @@ def process_full_assessment(
     """Orchestrates Granular Orthographic Analysis + Prescriptive AI Analysis."""
     if isinstance(transcriptions, list) and transcriptions:
         if isinstance(transcriptions[0], dict):
-            # Check for both key naming conventions so data is never lost
+            # Sort by word number first so out-of-order sheets (student wrote
+            # across instead of down) still pair correctly with the word list.
+            def safe_num(item):
+                try:
+                    return int(item.get("number", 0))
+                except (ValueError, TypeError):
+                    return 0
+
+            sorted_transcriptions = sorted(transcriptions, key=safe_num)
+
             intended_list = [
-                (item.get("intended_word") or item.get("intended") or "").strip() 
-                for item in transcriptions
+                (item.get("intended_word") or item.get("intended") or "").strip()
+                for item in sorted_transcriptions
             ]
             transcribed_list = [
-                (item.get("student_attempt") or item.get("attempt") or "").strip() 
-                for item in transcriptions
+                (item.get("student_attempt") or item.get("attempt") or "").strip()
+                for item in sorted_transcriptions
             ]
         else:
             transcribed_list = transcriptions
@@ -242,6 +251,7 @@ def process_full_assessment(
     except Exception as db_err:
         print(f"[DB Warning] Failed to save assessment results: {db_err}")
 
+    
     summary_prompt = f"""
     You are an expert primary school literacy coach.
 
@@ -251,9 +261,22 @@ def process_full_assessment(
     RULES:
     - Always refer to the child as '[Student]' in your commentary.
     - Provide clear, actionable feedback for the teacher.
-    
+
     TASK:
-    Provide a concise, 3-bullet-point prescriptive coaching guide for the teacher focusing on orthographic patterns, core gaps, and immediate next steps.
+    First, identify the SINGLE most urgent skill gap [Student] needs to work on next —
+    the one issue that, if addressed first, will unlock the most progress. State it as
+    one specific, narrow pattern (e.g. "short vowel vs. long vowel with silent-e (CVC
+    vs CVCe)" or "sh/ch/ck digraph confusion"), not a broad category like "vowels."
+
+    Then provide a concise, 3-bullet-point prescriptive coaching guide, formatted
+    EXACTLY like this:
+
+    IMMEDIATE PRIORITY: <one sentence naming the single most urgent, specific pattern
+    to address first, and why it matters most right now>
+
+    • Orthographic Strengths & Core Gaps: <observation>
+    • Targeted Instructional Focus: <how to teach the immediate priority above>
+    • Immediate Actionable Next Steps: <activities/strategies>
     """
     prescriptive_feedback = run_model_chain(
         task_type="text",
@@ -496,12 +519,23 @@ def generate_personalized_practice_words(
     unit_context = f"\nUNIT DESCRIPTION: {unit_description}" if unit_description else ""
     
     prompt = f"""
-You are an expert literacy specialist creating targeted practice lists for ESL/Mandarin L1 learners.
+You are an expert literacy specialist creating a targeted spelling practice list for an ESL/Mandarin L1 learner.
 
-Create a 10-word practice list for {student_alias}.
 Target Group: {target_group.upper()} - {group_info['name']}
-Patterns: {group_info['patterns']}
+General patterns for this group: {group_info['patterns']}
 {notes_context}{struggling_context}{mastered_context}{unit_context}{custom_words_context}
+
+INSTRUCTIONS:
+1. If the notes above contain a line starting with "IMMEDIATE PRIORITY:", that names
+   the single skill gap to address — build the entire list around it and ignore any
+   other gaps mentioned elsewhere in the notes for this list.
+2. If no such line is present, use your judgment to identify the single most urgent
+   gap described in TEACHER NOTES or STRUGGLING WORDS, prioritizing these over the
+   general group patterns below.
+3. Once you've identified the one priority, use minimal pairs and closely related
+   words that isolate exactly that contrast (e.g. hop/hope, rob/robe, slid/slide for
+   short-vs-long vowel work) — don't mix in words touching unrelated patterns.
+4. Do not repeat any word already listed under STRUGGLING WORDS above.
 
 Return ONLY a valid JSON array of 10 strings: ["word1", "word2", ..., "word10"]
 Do NOT include markdown formatting or extra text outside the JSON array.

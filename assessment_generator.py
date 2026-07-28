@@ -205,6 +205,105 @@ def draw_page_footer(c, w, assessment_id, page_num):
     # CLEANUP: Swapped company string to lean completely on the uppercase target routing app URL
     c.drawCentredString(w / 2.0, 22, f"{APP_URL.upper()}  •  DOCUMENT ID: {assessment_id}  •  PAGE {page_num}")
 
+def draw_practice_card(c, x, y, width, height, student_data, card_num):
+    """Draws a single practice list card with dashed cutting border."""
+    primary_color = colors.HexColor("#006633")
+    neutral_dark = colors.HexColor("#222222")
+    
+    # Draw dashed border for cutting
+    c.setStrokeColor(colors.HexColor("#999999"))
+    c.setLineWidth(0.5)
+    c.setDash(3, 3)
+    c.roundRect(x, y, width, height, 4, stroke=1, fill=0)
+    c.setDash()  # Reset to solid
+    
+    # Card header background
+    c.setFillColor(primary_color)
+    c.rect(x, y + height - 25, width, 25, fill=True, stroke=False)
+    
+    # Student name and date
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(x + 5, y + height - 18, student_data['student_name'])
+    c.setFont("Helvetica", 8)
+    c.drawRightString(x + width - 5, y + height - 18, datetime.now().strftime("%Y-%m-%d"))
+    
+    # Group focus
+    c.setFillColor(neutral_dark)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(x + 5, y + height - 40, f"Group: {student_data['group_title'].upper()}")
+    
+    # List title
+    c.setFont("Helvetica-Oblique", 9)
+    c.setFillColor(colors.HexColor("#444444"))
+    c.drawString(x + 5, y + height - 52, student_data['list_title'])
+    
+    # Word list
+    c.setFont("Helvetica", 9)
+    c.setFillColor(neutral_dark)
+    word_y = y + height - 70
+    for idx, word in enumerate(student_data['words'], 1):
+        if word_y < y + 10:
+            break  # Don't overflow card
+        c.drawString(x + 5, word_y, f"{idx}. {word}")
+        word_y -= 14
+
+def render_batch_practice_lists_pdf(student_practice_batch):
+    """
+    Generates a multi-slip PDF with practice lists for multiple students.
+    
+    Args:
+        student_practice_batch: List of dicts containing:
+            - student_name: str
+            - list_title: str
+            - group_title: str
+            - words: list of str
+    
+    Returns:
+        BytesIO buffer containing the PDF
+    """
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    w, h = A4
+    
+    # Grid configuration: 2 columns x 3 rows = 6 cards per page
+    cols = 2
+    rows = 3
+    card_width = (w - 60) / cols  # 30pt margin on each side
+    card_height = (h - 80) / rows  # 40pt margin top/bottom
+    margin_x = 30
+    margin_y = 40
+    
+    page_num = 1
+    card_idx = 0
+    
+    for student_data in student_practice_batch:
+        # Calculate card position
+        col = card_idx % cols
+        row = card_idx // cols
+        
+        x = margin_x + (col * card_width)
+        y = margin_y + ((rows - 1 - row) * card_height)
+        
+        draw_practice_card(c, x, y, card_width - 10, card_height - 10, student_data, card_idx + 1)
+        
+        card_idx += 1
+        
+        # Start new page if we've filled the grid
+        if card_idx >= cols * rows:
+            draw_page_footer(c, w, "BATCH-PRACTICE", page_num)
+            c.showPage()
+            page_num += 1
+            card_idx = 0
+    
+    # Draw footer on last page if there are cards
+    if card_idx > 0 or not student_practice_batch:
+        draw_page_footer(c, w, "BATCH-PRACTICE", page_num)
+    
+    c.save()
+    buffer.seek(0)
+    return buffer
+
 def render_assessment_pdf(test_data, is_teacher=True, use_primary_lines=True):
     """Generates continuous stream single or dual column layout templates with clean structural lines."""
     buffer = BytesIO()
