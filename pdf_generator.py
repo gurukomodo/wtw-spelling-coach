@@ -417,3 +417,169 @@ def generate_class_practice_sheet(class_data, lists_per_page=6):
     c.save()
     buffer.seek(0)
     return buffer
+
+
+def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
+    """
+    Printable batch practice sheet — 4 cards per page (2x2) by default.
+    Each card: logo + big student name + date in a green header band,
+    then word list centred in the white body area below. No titles.
+
+    class_data: list of dicts with keys:
+        student_name, words, group_title (optional), list_title (optional)
+    lists_per_page: 4 (default, recommended) or 6.
+    """
+    from datetime import date as _date
+    import os as _os
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    w, h = A4
+
+    cols = 2
+    rows = 3 if lists_per_page > 4 else 2
+
+    margin = 28
+    top_margin = 28
+    bottom_margin = 28
+    gap = 14
+
+    grid_w = w - 2 * margin
+    grid_h = h - top_margin - bottom_margin
+    card_w = (grid_w - (cols - 1) * gap) / cols
+    card_h = (grid_h - (rows - 1) * gap) / rows
+
+    forest    = HexColor('#006633')
+    white     = HexColor('#ffffff')
+    dark      = HexColor('#1a1a1a')
+    num_color = HexColor('#888888')
+    border    = HexColor('#cccccc')
+
+    header_h = 44    # green band height
+
+    # Auto-fit font to available body height so words always fill the card
+    # regardless of lists_per_page setting.
+    body_h        = card_h - header_h
+    n_words_max   = max((len(s.get('words', [])) for s in class_data), default=10)
+    padding       = 20   # top + bottom internal padding in body
+    available     = body_h - padding
+    line_h        = available / max(n_words_max, 1)
+    word_font_size = min(18, max(10, line_h * 0.55))
+    num_font_size  = max(8, word_font_size * 0.7)
+
+    # --- resolve logo once ---
+    logo_drawing = None
+    logo_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logo.svg")
+    if not _os.path.exists(logo_path):
+        logo_path = "logo.svg"
+    if _os.path.exists(logo_path):
+        try:
+            from svglib.svglib import svg2rlg
+            from reportlab.graphics import renderPDF as _renderPDF
+            logo_drawing = svg2rlg(logo_path)
+        except Exception:
+            logo_drawing = None
+
+    today_str = _date.today().strftime("%d %b %Y")
+
+    def draw_card(x, y, student):
+        name  = student.get('student_name', '')
+        words = student.get('words', [])
+
+        # --- outer border ---
+        c.setStrokeColor(border)
+        c.setLineWidth(0.75)
+        c.roundRect(x, y, card_w, card_h, 8, fill=0, stroke=1)
+
+        # --- green header band ---
+        c.setFillColor(forest)
+        # top rounded corners only: draw rect + mask bottom corners
+        c.roundRect(x, y + card_h - header_h, card_w, header_h, 8, fill=1, stroke=0)
+        c.rect(x, y + card_h - header_h, card_w, 8, fill=1, stroke=0)  # flatten bottom corners
+
+        # --- logo in header (left side) ---
+        logo_size = 30
+        logo_x = x + 10
+        logo_y = y + card_h - header_h + (header_h - logo_size) / 2
+        if logo_drawing:
+            try:
+                from reportlab.graphics import renderPDF as _renderPDF
+                factor = logo_size / max(logo_drawing.width, logo_drawing.height)
+                logo_drawing.width  *= factor
+                logo_drawing.height *= factor
+                logo_drawing.scale(factor, factor)
+                _renderPDF.draw(logo_drawing, c, logo_x, logo_y)
+                # reset scale for next card
+                logo_drawing.width  /= factor
+                logo_drawing.height /= factor
+                logo_drawing.scale(1 / factor, 1 / factor)
+            except Exception:
+                logo_drawing_fallback(c, logo_x, logo_y, logo_size)
+        else:
+            logo_drawing_fallback(c, logo_x, logo_y, logo_size)
+
+        # --- student name (large, white) ---
+        name_x = x + logo_size + 18
+        name_y = y + card_h - header_h + header_h * 0.38
+        c.setFillColor(white)
+        c.setFont("Helvetica-Bold", 16)
+        # truncate name if card is narrow
+        max_name_w = card_w - logo_size - 80
+        while c.stringWidth(name, "Helvetica-Bold", 16) > max_name_w and len(name) > 4:
+            name = name[:-1]
+        c.drawString(name_x, name_y, name)
+
+        # --- date (small, white, right-aligned) ---
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor('#ccffcc'))
+        c.drawRightString(x + card_w - 10, name_y + 2, today_str)
+
+        # --- word list: single centred block ---
+        if not words:
+            return
+
+        body_h  = card_h - header_h        # white area height
+        block_h = len(words) * line_h       # total height of word list
+        # vertically centre the block in the white area
+        block_top = y + body_h - (body_h - block_h) / 2 - line_h * 0.15
+
+        # measure widest word to horizontally centre the block
+        num_w = c.stringWidth("10. ", "Helvetica", num_font_size)
+        max_word_w = max(
+            c.stringWidth(wd, "Helvetica-Bold", word_font_size) for wd in words
+        )
+        block_w = num_w + max_word_w
+        block_x = x + (card_w - block_w) / 2   # left edge of centred block
+
+        for i, word in enumerate(words):
+            yy = block_top - i * line_h
+            c.setFillColor(num_color)
+            c.setFont("Helvetica", num_font_size)
+            c.drawRightString(block_x + num_w, yy, f"{i + 1}.")
+            c.setFillColor(dark)
+            c.setFont("Helvetica-Bold", word_font_size)
+            c.drawString(block_x + num_w + 4, yy, word)
+
+    def logo_drawing_fallback(c, lx, ly, sz):
+        """Green rounded square with white U — matches draw_page_decorations fallback."""
+        c.setFillColor(white)
+        c.roundRect(lx, ly, sz, sz, 5, fill=1, stroke=0)
+        c.setFillColor(forest)
+        c.setFont("Helvetica-Bold", int(sz * 0.6))
+        c.drawCentredString(lx + sz / 2, ly + sz * 0.2, "U")
+
+    per_page = cols * rows
+    slot = 0
+    for student in class_data:
+        if slot > 0 and slot % per_page == 0:
+            c.showPage()
+        row = slot % per_page // cols
+        col = slot % per_page % cols
+        x = margin + col * (card_w + gap)
+        y = h - top_margin - (row + 1) * card_h - row * gap
+        draw_card(x, y, student)
+        slot += 1
+
+    c.save()
+    buffer.seek(0)
+    return buffer
