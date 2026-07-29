@@ -1,0 +1,68 @@
+model_list:
+  # --- PRIMARY & FAST TIER (Groq & Gemini) ---
+  - model_name: primary-router
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+
+  - model_name: primary-router
+    litellm_params:
+      model: mistral/mistral-medium-3.5
+      api_key: os.environ/MISTRAL_API_KEY
+
+  # --- SECONDARY FALLBACKS (NVIDIA NIM) ---
+  - model_name: nvidia-fallback
+    litellm_params:
+      model: nvidia_nim/meta/llama-3.3-70b-instruct
+      api_key: os.environ/NVIDIA_API_KEY
+
+  - model_name: nvidia-fallback
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-4-340b-instruct
+      api_key: os.environ/NVIDIA_API_KEY
+
+  # --- SECONDARY FALLBACKS (GitHub Models / Azure) ---
+  - model_name: github-fallback
+    litellm_params:
+      model: github/gpt-4o
+      api_key: os.environ/GITHUB_TOKEN
+
+  - model_name: github-fallback
+    litellm_params:
+      model: github/gpt-4o-mini
+      api_key: os.environ/GITHUB_TOKEN
+
+  - model_name: github-fallback
+    litellm_params:
+      model: github/meta-llama-3.1-8b-instruct
+      api_key: os.environ/GITHUB_TOKEN
+
+# --- AUTOMATED FAILOVER ROUTING ---
+router_settings:
+  fallbacks:
+    - primary-router: ["nvidia-fallback", "github-fallback"]

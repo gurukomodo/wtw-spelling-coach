@@ -450,7 +450,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
     card_w = (grid_w - (cols - 1) * gap) / cols
     card_h = (grid_h - (rows - 1) * gap) / rows
 
-    forest    = HexColor('#006633')
+    forest    = HexColor('#f0f0f0')
     white     = HexColor('#ffffff')
     dark      = HexColor('#1a1a1a')
     num_color = HexColor('#888888')
@@ -512,7 +512,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
         # --- student name (large, white) ---
         name_x = x + logo_size + 14
         name_y = y + card_h - header_h + header_h * 0.38
-        c.setFillColor(white)
+        c.setFillColor(HexColor('#1a1a1a'))
         c.setFont("Helvetica-Bold", 12)
         # truncate name if card is narrow
         max_name_w = card_w - logo_size - 65
@@ -522,7 +522,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
 
         # --- date (small, white, right-aligned) ---
         c.setFont("Helvetica", 7.5)
-        c.setFillColor(HexColor('#ccffcc'))
+        c.setFillColor(HexColor('#666666'))
         c.drawRightString(x + card_w - 8, name_y + 1, today_str)
 
         # --- word list: single centred block ---
@@ -530,15 +530,16 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
             return
 
         body_h  = card_h - header_h        # white area height
-        padding = 20                       # top + bottom internal padding in body
-        available = body_h - padding
+        padding_top = 16      # gap below header
+        padding_bottom = 10   # gap above card bottom
+        available = body_h - padding_top - padding_bottom
         line_h = available / max(len(words), 1)
         word_font_size = min(18, max(10, line_h * 0.55))
         num_font_size  = max(8, word_font_size * 0.7)
 
-        block_h = len(words) * line_h       # total height of word list
-        # vertically centre the block in the white area
-        block_top = y + body_h - (body_h - block_h) / 2 - line_h * 0.15
+        block_h = len(words) * line_h
+        # Vertically centre within the available space, offset down from header
+        block_top = y + body_h - padding_top - (available - block_h) / 2 - line_h * 0.1
 
         # measure widest word to horizontally centre the block
         num_w = c.stringWidth("10. ", "Helvetica", num_font_size)

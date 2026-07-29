@@ -604,7 +604,15 @@ def display_class_page():
                             st.session_state[f'practice_list_{student_id}'] = {
                                 'words': words,
                                 'group_title': group_name,
+                                'student_name': student_name,
                             }
+                            save_student_practice_list(
+                                student_id=student_id,
+                                teacher_id=current_teacher_email,
+                                list_name=f"{group_name} Practice",
+                                group_title=group_name,
+                                words_list=words
+                            )
                         except Exception as e:
                             generation_errors.append(f"{student_name}: {e}")
                     progress.empty()
@@ -621,10 +629,10 @@ def display_class_page():
 
             # --- Download button ---
             if practice_batch:
-                from assessment_generator import render_batch_practice_lists_pdf
+                from pdf_generator import render_batch_practice_lists_pdf
                 pdf_bytes = render_batch_practice_lists_pdf(practice_batch)
                 st.download_button(
-                    label="⬇ Download Batch Practice PDF",
+                    label="Download Batch Practice PDF",
                     data=pdf_bytes,
                     file_name=f"Class_Practice_Lists_{datetime.datetime.now().strftime('%Y-%m-%d')}.pdf",
                     mime="application/pdf",
@@ -712,7 +720,8 @@ def display_student_detail_view(student_id, current_teacher_email):
                 
                 st.session_state[f'practice_list_{student_id}'] = {
                     "student_name": student_name, "group_title": target_group,
-                    "words": personalized_words
+                    "words": personalized_words,
+                    'student_name': student_name,
                 }
                 st.success("Personalized practice list generated!")
                 st.rerun()
