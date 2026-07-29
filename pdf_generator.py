@@ -421,13 +421,14 @@ def generate_class_practice_sheet(class_data, lists_per_page=6):
 
 def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
     """
-    Printable batch practice sheet — 4 cards per page (2x2) by default.
-    Each card: logo + big student name + date in a green header band,
-    then word list centred in the white body area below. No titles.
+    Printable batch practice sheet — 6 cards per page (3x2) layout.
+    Each card: green header band with logo, student name large, date.
+    No titles of any kind (no group title, no list title) — just the header and words.
+    Words in a single centred column, as large as they can be while fitting all words in the card.
 
     class_data: list of dicts with keys:
         student_name, words, group_title (optional), list_title (optional)
-    lists_per_page: 4 (default, recommended) or 6.
+    lists_per_page: kept in signature for compatibility, but layout is 3x2.
     """
     from datetime import date as _date
     import os as _os
@@ -436,13 +437,13 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
     c = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
 
-    cols = 2
-    rows = 3 if lists_per_page > 4 else 2
+    cols = 3
+    rows = 2
 
-    margin = 28
+    margin = 24
     top_margin = 28
     bottom_margin = 28
-    gap = 14
+    gap = 12
 
     grid_w = w - 2 * margin
     grid_h = h - top_margin - bottom_margin
@@ -455,17 +456,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
     num_color = HexColor('#888888')
     border    = HexColor('#cccccc')
 
-    header_h = 44    # green band height
-
-    # Auto-fit font to available body height so words always fill the card
-    # regardless of lists_per_page setting.
-    body_h        = card_h - header_h
-    n_words_max   = max((len(s.get('words', [])) for s in class_data), default=10)
-    padding       = 20   # top + bottom internal padding in body
-    available     = body_h - padding
-    line_h        = available / max(n_words_max, 1)
-    word_font_size = min(18, max(10, line_h * 0.55))
-    num_font_size  = max(8, word_font_size * 0.7)
+    header_h = 40    # green band height
 
     # --- resolve logo once ---
     logo_drawing = None
@@ -498,8 +489,8 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
         c.rect(x, y + card_h - header_h, card_w, 8, fill=1, stroke=0)  # flatten bottom corners
 
         # --- logo in header (left side) ---
-        logo_size = 30
-        logo_x = x + 10
+        logo_size = 24
+        logo_x = x + 8
         logo_y = y + card_h - header_h + (header_h - logo_size) / 2
         if logo_drawing:
             try:
@@ -519,26 +510,32 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
             logo_drawing_fallback(c, logo_x, logo_y, logo_size)
 
         # --- student name (large, white) ---
-        name_x = x + logo_size + 18
+        name_x = x + logo_size + 14
         name_y = y + card_h - header_h + header_h * 0.38
         c.setFillColor(white)
-        c.setFont("Helvetica-Bold", 16)
+        c.setFont("Helvetica-Bold", 12)
         # truncate name if card is narrow
-        max_name_w = card_w - logo_size - 80
-        while c.stringWidth(name, "Helvetica-Bold", 16) > max_name_w and len(name) > 4:
+        max_name_w = card_w - logo_size - 65
+        while c.stringWidth(name, "Helvetica-Bold", 12) > max_name_w and len(name) > 4:
             name = name[:-1]
         c.drawString(name_x, name_y, name)
 
         # --- date (small, white, right-aligned) ---
-        c.setFont("Helvetica", 8)
+        c.setFont("Helvetica", 7.5)
         c.setFillColor(HexColor('#ccffcc'))
-        c.drawRightString(x + card_w - 10, name_y + 2, today_str)
+        c.drawRightString(x + card_w - 8, name_y + 1, today_str)
 
         # --- word list: single centred block ---
         if not words:
             return
 
         body_h  = card_h - header_h        # white area height
+        padding = 20                       # top + bottom internal padding in body
+        available = body_h - padding
+        line_h = available / max(len(words), 1)
+        word_font_size = min(18, max(10, line_h * 0.55))
+        num_font_size  = max(8, word_font_size * 0.7)
+
         block_h = len(words) * line_h       # total height of word list
         # vertically centre the block in the white area
         block_top = y + body_h - (body_h - block_h) / 2 - line_h * 0.15
@@ -563,7 +560,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
     def logo_drawing_fallback(c, lx, ly, sz):
         """Green rounded square with white U — matches draw_page_decorations fallback."""
         c.setFillColor(white)
-        c.roundRect(lx, ly, sz, sz, 5, fill=1, stroke=0)
+        c.roundRect(lx, ly, sz, sz, 4, fill=1, stroke=0)
         c.setFillColor(forest)
         c.setFont("Helvetica-Bold", int(sz * 0.6))
         c.drawCentredString(lx + sz / 2, ly + sz * 0.2, "U")
