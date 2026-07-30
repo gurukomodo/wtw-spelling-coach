@@ -334,6 +334,7 @@ def show_teacher_dashboard():
     if st.sidebar.button("Log Out", key="logout_button"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
+            st.query_params.clear()
         st.rerun()
 
     page_options = ["Class", "Student", "Admin"]
