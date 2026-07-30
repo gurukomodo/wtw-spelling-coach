@@ -36,7 +36,7 @@ from database_manager import (
     get_student_current_group_focus, update_student_current_group_focus,
     delete_assessment, add_student, get_sheet_data,
     save_student_practice_list, get_student_practice_lists, delete_student_practice_list,
-    delete_student
+    delete_student, save_diagnostic_assessment, get_diagnostic_assessments
 )
 import constants
 from ai_learning_engine import ingest_teacher_calibration
@@ -397,7 +397,10 @@ def display_class_page():
     st.title("Class Overview")
     
     if "class_diagnostic_history" not in st.session_state:
-        st.session_state["class_diagnostic_history"] = []
+        from database_manager import get_diagnostic_assessments
+        st.session_state["class_diagnostic_history"] = get_diagnostic_assessments(
+            st.session_state.user_email
+        )
     
     students = get_all_students_by_teacher(st.session_state.user_email)
     
@@ -451,62 +454,78 @@ def display_class_page():
 
     st.header("Generate Class Diagnostic Assessments")
     st.write("Construct evaluation sheets to assess spelling mastery across active class profiles.")
-    col_b1, col_b2 = st.columns(2)
-    
-    with col_b1:
-        if st.button("Create Standard Baseline PSI", key="generate_psi_baseline_btn", use_container_width=True):
-            from assessment_generator import generate_psi_baseline
-            new_psi = generate_psi_baseline()
+
+    if st.button("Create Diagnostic Assessment", key="generate_diagnostic_btn", type="primary"):
+        with st.spinner("Building diagnostic assessment..."):
+            from assessment_generator import generate_psi_baseline, generate_class_diagnostics
+            from database_manager import save_diagnostic_assessment
+            new_tests = []
             if not any(t['assessment_id'] == 'DIAG-PSI-BASE' for t in st.session_state["class_diagnostic_history"]):
-                st.session_state["class_diagnostic_history"].insert(0, new_psi)
-                st.success("Standard Baseline PSI generated successfully!")
+                new_tests.append(generate_psi_baseline())
+            dynamic = generate_class_diagnostics(class_levels)
+            new_tests.extend(dynamic)
+            for test in new_tests:
+                save_diagnostic_assessment(test, st.session_state.user_email)
+            st.session_state["class_diagnostic_history"].extend(new_tests)
+            if new_tests:
+                st.success(f"Created {len(new_tests)} assessment(s).")
                 st.rerun()
             else:
-                st.warning("The Baseline PSI document is already present in your ledger history list.")
-
-    with col_b2:
-        if st.button("Create Dynamic Group Tests", key="generate_diagnostic_run_btn", use_container_width=True):
-            with st.spinner("Analyzing class spread and building targeted tests..."):
-                from assessment_generator import generate_class_diagnostics
-                new_tests = generate_class_diagnostics(class_levels)
-                st.session_state["class_diagnostic_history"].extend(new_tests)
-                st.success(f"Successfully constructed {len(new_tests)} targeted structural tests!")
-                st.rerun()
+                st.info("All assessments already exist in the ledger below.")
 
     if st.session_state["class_diagnostic_history"]:
         st.write("---")
-        st.subheader("Available Class Diagnostic Ledger")
-        for idx, test in enumerate(st.session_state["class_diagnostic_history"]):
-            with st.container():
-                st.write("")
-                col1, col2, col3 = st.columns([2, 1, 1])
-                with col1:
-                    st.write(f"**{test['test_name']}** (`{test['assessment_id']}`)")
-                    st.caption(f"Created: {test['created_at']} | Words: {', '.join(test['words'])}")
-                
-                with col2:
-                    from assessment_generator import render_assessment_pdf
-                    teacher_bytes = render_assessment_pdf(test, is_teacher=True)
-                    st.download_button(
-                        label="Teacher Copy",
-                        data=teacher_bytes,
-                        file_name=f"Teacher_Guide_{test['assessment_id']}.pdf",
-                        mime="application/pdf",
-                        key=f"dl_teach_{test['assessment_id']}_{idx}"
-                    )
-                    
-                with col3:
-                    student_bytes = render_assessment_pdf(test, is_teacher=False)
-                    st.download_button(
-                        label="Student Sheets",
-                        data=student_bytes,
-                        file_name=f"Student_Blanks_{test['assessment_id']}.pdf",
-                        mime="application/pdf",
-                        key=f"dl_stud_{test['assessment_id']}_{idx}"
-                    )
-                st.write("---")
+        st.subheader("Available Class Diagnostic Assessments")
 
-    st.divider()
+        for idx, test in enumerate(st.session_state["class_diagnostic_history"]):
+            with st.expander(f"**{test['test_name']}** — {test['assessment_id']} · {test['created_at']}"):
+                st.caption(f"Words: {', '.join(test['words'])}")
+                from assessment_generator import render_assessment_pdf
+                from io import BytesIO
+
+                teacher_bytes = render_assessment_pdf(test, is_teacher=True).getvalue()
+                student_bytes = render_assessment_pdf(test, is_teacher=False).getvalue()
+
+                # Combine both PDFs into one download
+                from pypdf import PdfWriter
+                writer = PdfWriter()
+                for pdf_bytes in [teacher_bytes, student_bytes]:
+                    from pypdf import PdfReader
+                    reader = PdfReader(BytesIO(pdf_bytes))
+                    for page in reader.pages:
+                        writer.add_page(page)
+                both_buf = BytesIO()
+                writer.write(both_buf)
+                both_bytes = both_buf.getvalue()
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.download_button(
+                        label="⬇ Teacher Copy",
+                        data=teacher_bytes,
+                        file_name=f"Teacher_{test['assessment_id']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_teach_{test['assessment_id']}_{idx}",
+                        use_container_width=True
+                    )
+                with col2:
+                    st.download_button(
+                        label="⬇ Student Recording Copy",
+                        data=student_bytes,
+                        file_name=f"Student_{test['assessment_id']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_stud_{test['assessment_id']}_{idx}",
+                        use_container_width=True
+                    )
+                with col3:
+                    st.download_button(
+                        label="⬇ Download Both",
+                        data=both_bytes,
+                        file_name=f"Both_{test['assessment_id']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_both_{test['assessment_id']}_{idx}",
+                        use_container_width=True
+                    )
     
 # Batch Print Practice Lists Section
     st.header("Batch Print Practice Lists")
