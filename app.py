@@ -455,6 +455,7 @@ def display_class_page():
     st.header("Generate Class Diagnostic Assessments")
     st.write("Construct evaluation sheets to assess spelling mastery across active class profiles.")
 
+
     st.subheader("Primary Spelling Inventory (PSI)")
     st.write("The standardised 26-word baseline assessment. Use this first with any new student.")
     from assessment_generator import generate_psi_baseline, render_assessment_pdf
@@ -495,6 +496,7 @@ def display_class_page():
             key="psi_both_dl"
         )
     st.divider()
+    
 
     if st.button("Create Diagnostic Assessment", key="generate_diagnostic_btn", type="primary"):
         with st.spinner("Building diagnostic assessment..."):
@@ -706,6 +708,50 @@ def display_class_page():
             st.info("Select at least one student to generate batch practice lists.")
     else:
         st.info("No students available. Add students to your class first.")
+
+    st.divider()
+    st.header("Feedback & Suggestions")
+    st.write("Have an idea or spotted something that could be better? Let us know.")
+
+    with st.form("feedback_form", clear_on_submit=True):
+        feedback_text = st.text_area(
+            "Your feedback",
+            placeholder="Describe your suggestion, bug, or idea...",
+            height=120
+        )
+        submitted = st.form_submit_button("Send Feedback", type="primary")
+        if submitted:
+            if feedback_text.strip():
+                try:
+                    import smtplib
+                    from email.mime.text import MIMEText
+                    from email.mime.multipart import MIMEMultipart
+
+                    sender = os.getenv("FEEDBACK_EMAIL_ADDRESS")
+                    password = os.getenv("FEEDBACK_EMAIL_PASSWORD")
+                    recipient = ADMIN_EMAIL
+                    teacher = st.session_state.get("user_email", "Unknown teacher")
+
+                    if sender and password:
+                        msg = MIMEMultipart()
+                        msg["From"] = sender
+                        msg["To"] = recipient
+                        msg["Subject"] = f"UnBoxEd Feedback from {teacher}"
+                        body = f"From: {teacher}\n\n{feedback_text.strip()}"
+                        msg.attach(MIMEText(body, "plain"))
+
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                            server.login(sender, password)
+                            server.sendmail(sender, recipient, msg.as_string())
+
+                        st.success("Thank you! Your feedback has been sent.")
+                    else:
+                        st.warning("Feedback email is not configured yet — please contact the administrator directly.")
+                except Exception as e:
+                    st.error(f"Could not send feedback: {e}")
+            else:
+                st.warning("Please enter some feedback before submitting.")
+                
 # =============================================================================
 # REFACTORED WORKFLOW ROUTER: EVALUATOR -> LOGIC -> DISPLAY -> OVERRIDE UI
 # =============================================================================

@@ -1333,3 +1333,170 @@ def delete_student_practice_list(list_id):
 
 # Run schema update on import/init
 ensure_schema_updated()
+
+# ---------------------------------------------------------------------------
+# Student Practice Lists
+# ---------------------------------------------------------------------------
+
+def _ensure_practice_lists_table(cursor):
+    """Creates the student_practice_lists table if it doesn't exist yet."""
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_practice_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id TEXT NOT NULL,
+            teacher_id TEXT NOT NULL,
+            list_name TEXT NOT NULL,
+            group_title TEXT,
+            words TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+
+def save_student_practice_list(student_id, teacher_id, list_name, group_title, words_list):
+    """Save a practice word list for a student. Returns True on success."""
+    import json
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        _ensure_practice_lists_table(cursor)
+        cursor.execute('''
+            INSERT INTO student_practice_lists
+                (student_id, teacher_id, list_name, group_title, words)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            student_id,
+            teacher_id,
+            list_name,
+            group_title,
+            json.dumps(words_list)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[DB Error] save_student_practice_list: {e}")
+        return False
+
+
+def get_student_practice_lists(student_id):
+    """Return all saved practice lists for a student, newest first."""
+    import json
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        _ensure_practice_lists_table(cursor)
+        cursor.execute('''
+            SELECT id, list_name, group_title, words, created_at
+            FROM student_practice_lists
+            WHERE student_id = ?
+            ORDER BY created_at DESC
+        ''', (student_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            try:
+                words = json.loads(row[3])
+            except Exception:
+                words = [w.strip() for w in row[3].split(',') if w.strip()]
+            result.append({
+                'id': row[0],
+                'list_name': row[1],
+                'group_title': row[2] or '',
+                'words': words,
+                'created_at': row[4],
+            })
+        return result
+    except Exception as e:
+        print(f"[DB Error] get_student_practice_lists: {e}")
+        return []
+
+
+def delete_student_practice_list(list_id):
+    """Delete a saved practice list by its id. Returns True on success."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        _ensure_practice_lists_table(cursor)
+        cursor.execute(
+            'DELETE FROM student_practice_lists WHERE id = ?', (list_id,)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[DB Error] delete_student_practice_list: {e}")
+        return False
+
+    # ---------------------------------------------------------------------------
+# Class Diagnostic Assessments
+# ---------------------------------------------------------------------------
+
+def _ensure_diagnostic_assessments_table(cursor):
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS class_diagnostic_assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assessment_id TEXT NOT NULL UNIQUE,
+            teacher_id TEXT NOT NULL,
+            test_name TEXT NOT NULL,
+            words TEXT NOT NULL,
+            feature_map TEXT,
+            created_at TEXT NOT NULL
+        )
+    ''')
+
+def save_diagnostic_assessment(assessment, teacher_id):
+    """Persist a generated diagnostic assessment to the database."""
+    import json
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        _ensure_diagnostic_assessments_table(cursor)
+        cursor.execute('''
+            INSERT OR IGNORE INTO class_diagnostic_assessments
+                (assessment_id, teacher_id, test_name, words, feature_map, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            assessment['assessment_id'],
+            teacher_id,
+            assessment['test_name'],
+            json.dumps(assessment['words']),
+            json.dumps(assessment.get('feature_map', {})),
+            assessment['created_at'],
+        ))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[DB Error] save_diagnostic_assessment: {e}")
+        return False
+
+def get_diagnostic_assessments(teacher_id):
+    """Load all saved diagnostic assessments for a teacher, newest first."""
+    import json
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        _ensure_diagnostic_assessments_table(cursor)
+        cursor.execute('''
+            SELECT assessment_id, test_name, words, feature_map, created_at
+            FROM class_diagnostic_assessments
+            WHERE teacher_id = ?
+            ORDER BY created_at DESC
+        ''', (teacher_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                'assessment_id': r[0],
+                'test_name': r[1],
+                'words': json.loads(r[2]),
+                'feature_map': json.loads(r[3]) if r[3] else {},
+                'created_at': r[4],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"[DB Error] get_diagnostic_assessments: {e}")
+        return []

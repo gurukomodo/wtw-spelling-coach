@@ -518,7 +518,7 @@ def render_batch_practice_lists_pdf(class_data, lists_per_page=4):
         max_name_w = card_w - logo_size - 65
         while c.stringWidth(name, "Helvetica-Bold", 12) > max_name_w and len(name) > 4:
             name = name[:-1]
-        c.drawString(name_x, name_y, name)
+        c.drawCentredString(x + card_w / 2, name_y, name)
 
         # --- date (small, white, right-aligned) ---
         c.setFont("Helvetica", 7.5)
