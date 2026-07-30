@@ -1135,9 +1135,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 key=f"intended_words_input_{student_id}"
             )
             if st.button("Save New Word List", key=f"save_new_list_btn_{student_id}"):
-                if new_name and st.session_state.intended_words_input:
-                    if save_named_list(current_teacher_email, new_name.strip(), st.session_state.intended_words_input.strip()):
-                        st.success(f"List '{new_name}' saved!")
+                if new_list_name and st.session_state.intended_words_input:
+                    if save_named_list(current_teacher_email, new_list_name.strip(), st.session_state.intended_words_input.strip()):
+                        st.success(f"List '{new_list_name}' saved!")
                         st.session_state.current_word_list_mode = "Select Existing List"
                         st.rerun()
 
@@ -1544,9 +1544,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 if raw_list and raw_list != "Select a saved list...":
                     assessment_name = raw_list
             else:
-                new_name = st.session_state.get(f"new_list_name_{student_id}")
-                if new_name and new_name.strip():
-                    assessment_name = new_name.strip()
+                new_name_from_input = st.session_state.get(f"new_list_name_{student_id}")
+                if new_name_from_input and new_name_from_input.strip():
+                    assessment_name = new_name_from_input.strip()
 
             notes_content = st.session_state.get("final_diagnostic_notes", "")
             refined_notes_with_header = f"Word List: {assessment_name}\n{notes_content}"
