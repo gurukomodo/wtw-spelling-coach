@@ -234,6 +234,13 @@ def main():
     if st.query_params.get("email"):
         st.session_state.logged_in = True
         st.session_state.user_email = st.query_params.get("email")
+        if not st.session_state.get("user_name"):
+            teacher = next(
+                (t for t in get_all_teachers() 
+                 if t.get("email", "").lower() == st.session_state.user_email.lower()),
+                None
+            )
+            st.session_state.user_name = teacher["name"] if teacher and teacher.get("name") else st.session_state.user_email
 
     if st.session_state.get('logged_in'):
         show_teacher_dashboard()
@@ -322,7 +329,7 @@ def show_login_page():
 # =============================================================================
 def show_teacher_dashboard():
     st.sidebar.image("logo.svg", width=200)
-    st.sidebar.success(f"👤 Logged in: {st.session_state.user_name}")
+    st.sidebar.success(f"👤 Logged in: {st.session_state.get('user_name', st.session_state.get('user_email', 'Teacher'))}")
 
     if st.sidebar.button("Log Out", key="logout_button"):
         for key in list(st.session_state.keys()):
@@ -751,7 +758,7 @@ def display_class_page():
                     st.error(f"Could not send feedback: {e}")
             else:
                 st.warning("Please enter some feedback before submitting.")
-                
+
 # =============================================================================
 # REFACTORED WORKFLOW ROUTER: EVALUATOR -> LOGIC -> DISPLAY -> OVERRIDE UI
 # =============================================================================
