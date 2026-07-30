@@ -668,7 +668,7 @@ def display_class_page():
                             }
                             save_student_practice_list(
                                 student_id=student_id,
-                                teacher_id=current_teacher_email,
+                                teacher_id=st.session_state.user_email,
                                 list_name=f"{group_name} Practice",
                                 group_title=group_name,
                                 words_list=words
@@ -1135,9 +1135,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 key=f"intended_words_input_{student_id}"
             )
             if st.button("Save New Word List", key=f"save_new_list_btn_{student_id}"):
-                if new_list_name and st.session_state.intended_words_input:
-                    if save_named_list(current_teacher_email, new_list_name.strip(), st.session_state.intended_words_input.strip()):
-                        st.success(f"List '{new_list_name}' saved!")
+                if new_name and st.session_state.intended_words_input:
+                    if save_named_list(current_teacher_email, new_name.strip(), st.session_state.intended_words_input.strip()):
+                        st.success(f"List '{new_name}' saved!")
                         st.session_state.current_word_list_mode = "Select Existing List"
                         st.rerun()
 
@@ -1560,7 +1560,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 if not w.get('is_correct') and w.get('intended_word')
             )
 
-            resolved_teacher_email = current_teacher_email or st.session_state.get('user_email') or "authenticated_teacher@unboxed.edu"
+            resolved_teacher_email = st.session_state.get('user_email') or "authenticated_teacher@unboxed.edu"
 
             assessment_data_dict = {
                 "student_id": student_id,
