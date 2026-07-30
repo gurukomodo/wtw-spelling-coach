@@ -14,10 +14,10 @@ import spelling_logic
 from constants import DIAGNOSTIC_GROUPS, DEFAULT_TEST_WORDS, PSI_WORD_BANK
 from utils import preprocess_image, clean_ai_formatting
 from spelling_logic import (
-    get_ai_discrepancy_feedback, 
-    transcribe_handwriting, 
+    get_ai_discrepancy_feedback,
+    transcribe_handwriting,
     generate_personalized_practice_words,
-    process_assessment_response  
+    process_assessment_response
 )
 
 try:
@@ -26,13 +26,13 @@ except ImportError:
     evaluate_spelling_attempt = None
 
 from database_manager import (
-    init_db, get_teacher_settings, import_from_csv, get_student_history, 
+    init_db, get_teacher_settings, import_from_csv, get_student_history,
     get_database_stats, fix_all_teacher_ids, clear_all_data, sync_identity_from_assessments,
     get_all_students_by_teacher, get_all_students_for_allocation,
-    update_student_teacher, register_teacher, get_all_teachers, 
+    update_student_teacher, register_teacher, get_all_teachers,
     get_latest_teacher_notes, get_struggling_words,
     get_student_id_by_name, save_student_identity, get_student_name, get_name_for_id,
-    save_named_list, get_named_lists, get_named_list_by_id, init_correction_tables, 
+    save_named_list, get_named_lists, get_named_list_by_id, init_correction_tables,
     get_student_current_group_focus, update_student_current_group_focus,
     delete_assessment, add_student, get_sheet_data,
     save_student_practice_list, get_student_practice_lists, delete_student_practice_list,
@@ -56,7 +56,7 @@ st.set_page_config(page_title="UnBoxEd Spelling Coach", layout="wide", page_icon
 # =============================================================================
 PROFILES_CSV = "students.csv"
 SETTINGS_FILE = "settings.json"
-ADMIN_EMAIL = "komododundee@gmail.com" 
+ADMIN_EMAIL = "komododundee@gmail.com"
 
 def load_settings():
     """Load class-wide settings from JSON."""
@@ -93,13 +93,13 @@ def migrate_legacy_profiles():
     updated = False
     profiles_data = []
     teacher_id = st.session_state.get("user_name", "admin@example.com")
-    
+
     try:
         with open(PROFILES_CSV, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             id_col = "Student ID" if "Student ID" in fieldnames else "Student Name"
-            
+
             for row in reader:
                 val = row.get(id_col, "")
                 if val and not val.startswith("STU_"):
@@ -107,7 +107,7 @@ def migrate_legacy_profiles():
                     row[id_col] = new_id
                     updated = True
                 profiles_data.append(row)
-                
+
         if updated:
             new_fieldnames = ["Student ID", "Struggles", "Mastered Words", "Target_Group"]
             with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
@@ -122,7 +122,7 @@ def migrate_legacy_profiles():
                     }
                     writer.writerow(updated_row)
             st.toast("Legacy student profiles migrated to Cloud-hosted Map.")
-            
+
     except Exception as e:
         st.error(f"Migration error: {e}")
 
@@ -151,7 +151,7 @@ def save_profile(student_id, struggles, mastered, target_group):
     """Save/Update a student profile in the CSV."""
     profiles = load_profiles()
     profiles[student_id] = {"struggles": struggles, "mastered": mastered, "target_group": target_group, "teacher_id": st.session_state.get("user_email")}
-    
+
     try:
         with open(PROFILES_CSV, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=["Student ID", "Struggles", "Mastered Words", "Target_Group", "teacher_id"])
@@ -173,16 +173,16 @@ def save_profile(student_id, struggles, mastered, target_group):
 def initialize_session_state():
     """Initialize session state variables and database."""
     init_db()
-    
+
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
-    
+
     if 'role' not in st.session_state:
         st.session_state.role = None
-    
+
     if "user_email" not in st.session_state:
         st.session_state.user_email = None
-    
+
     defaults = [
         ("raw_transcription", ""), ("evaluator_result", None), ("analysis_result", None),
         ("practice_lists", None), ("diagnostic_test", None), ("struggling_words", ""),
@@ -205,12 +205,12 @@ def main():
     if 'next_page' in st.session_state:
         st.session_state.navigation_menu = st.session_state.next_page
         del st.session_state.next_page
-    
+
     initialize_session_state()
-    
+
     if 'navigation_menu' not in st.session_state:
         st.session_state.navigation_menu = 'Class'
-    
+
     if st.session_state.get('login_button'):
         selection = st.session_state.get('login_teacher_select')
         if selection:
@@ -225,10 +225,10 @@ def main():
             st.session_state.user_email = email
             st.session_state.user_name = name
             st.session_state.authenticated = True
-            
+
             if email == ADMIN_EMAIL:
                 st.session_state.is_admin = True
-                
+
             st.rerun()
 
     if st.query_params.get("email"):
@@ -256,7 +256,7 @@ def show_registration_page():
         if st.button("Go to Login Page →", use_container_width=True):
             st.session_state.go_to_login = True
             st.rerun()
-    
+
     with col2:
         st.subheader("New Coach")
         with st.form("registration_form", clear_on_submit=True):
@@ -280,7 +280,7 @@ def show_login_page():
     st.image("logo.svg", width=200)
     st.title("Teacher Login")
     existing_teachers = get_all_teachers()
-    
+
     if existing_teachers:
         teacher_options = []
         for t in existing_teachers:
@@ -288,7 +288,7 @@ def show_login_page():
             teacher_options.append(f"{name} ({t['email']})")
 
         selected_teacher = st.selectbox("Select your account:", teacher_options, key='login_teacher_select')
-        
+
         if st.button("Login", key="login_button"):
             if '(' in selected_teacher and ')' in selected_teacher:
                 email = selected_teacher.split('(')[-1].replace(')', '')
@@ -296,22 +296,22 @@ def show_login_page():
             else:
                 email = selected_teacher
                 name = selected_teacher.split('@')[0] if '@' in selected_teacher else selected_teacher
-        
+
             st.session_state.authenticated = True
             st.session_state.user_name = name
             st.session_state.user_email = email
             st.session_state.logged_in = True
             st.session_state.role = 'teacher'
-            
+
             if 'reg_teacher_select' in st.session_state:
                 del st.session_state['reg_teacher_select']
-            
+
             st.query_params["email"] = email
             st.query_params["login"] = email
             st.rerun()
     else:
         st.info("No accounts found. Please register first.")
-        
+
     if st.button("← Back to Registration", key="back_to_reg"):
         if 'reg_teacher_select' in st.session_state:
             del st.session_state['reg_teacher_select']
@@ -323,30 +323,30 @@ def show_login_page():
 def show_teacher_dashboard():
     st.sidebar.image("logo.svg", width=200)
     st.sidebar.success(f"👤 Logged in: {st.session_state.user_name}")
-    
+
     if st.sidebar.button("Log Out", key="logout_button"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
-    
+
     page_options = ["Class", "Student", "Admin"]
     if 'navigation_menu' in st.session_state:
         page = st.sidebar.radio("Navigation", page_options, key="navigation_menu")
     else:
         page = st.sidebar.radio("Navigation", page_options, index=0, key="navigation_menu")
-    
+
     migrate_legacy_profiles()
     current_teacher_email = st.session_state.get('user_email')
-    
+
     student_id = None
     if page == "Student":
         all_students = get_all_students_by_teacher(current_teacher_email)
         student_options = {s['name']: s['student_id'] for s in all_students}
-        
+
         if student_options:
             current_names = list(student_options.keys())
             start_index = 0
-            
+
             if st.session_state.get('student_id'):
                 try:
                     selected_sid = st.session_state.get('student_id')
@@ -355,14 +355,14 @@ def show_teacher_dashboard():
                         start_index = current_names.index(selected_name)
                 except Exception:
                     start_index = 0
-                
+
             selected_name = st.sidebar.selectbox("Select Student", options=current_names, index=start_index, key="sidebar_student_selector")
             newly_student_id = student_options[selected_name]
 
             if st.session_state.get('current_student_id') != newly_student_id:
                 st.session_state.current_student_id = newly_student_id
                 st.session_state.current_student_name = selected_name
-                
+
                 keys_to_clear = [
                     'uploaded_file', 'raw_transcription', 'edited_transcription', 'evaluator_result',
                     'analysis_result', 'practice_lists', 'diagnostic_test', 'struggling_words',
@@ -377,7 +377,7 @@ def show_teacher_dashboard():
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
-            
+
             student_id = newly_student_id
 
     if page == "Class":
@@ -395,15 +395,15 @@ def show_teacher_dashboard():
 # =============================================================================
 def display_class_page():
     st.title("Class Overview")
-    
+
     if "class_diagnostic_history" not in st.session_state:
         from database_manager import get_diagnostic_assessments
         st.session_state["class_diagnostic_history"] = get_diagnostic_assessments(
             st.session_state.user_email
         )
-    
+
     students = get_all_students_by_teacher(st.session_state.user_email)
-    
+
     if not students:
         st.info("No students in your class yet. Use the form below to add one.")
         class_levels = ['g1']
@@ -420,11 +420,11 @@ def display_class_page():
             sname = s.get('name')
             sgroup = s.get('current_g_level', 'g1')
             class_levels.append(sgroup)
-            
+
             col1, col2, col3 = st.columns([3, 1, 2])
             col1.write(f"**{sname}**")
             col2.write(f"Group {sgroup[-1] if sgroup else '1'}")
-            
+
             if col3.button("View Profile", key=f"btn_{sid}"):
                 st.session_state.student_id = sid
                 st.session_state.next_page = "Student"
@@ -454,6 +454,47 @@ def display_class_page():
 
     st.header("Generate Class Diagnostic Assessments")
     st.write("Construct evaluation sheets to assess spelling mastery across active class profiles.")
+
+    st.subheader("Primary Spelling Inventory (PSI)")
+    st.write("The standardised 26-word baseline assessment. Use this first with any new student.")
+    from assessment_generator import generate_psi_baseline, render_assessment_pdf
+    from io import BytesIO
+    _psi = generate_psi_baseline()
+    _col1, _col2, _col3 = st.columns(3)
+    with _col1:
+        st.download_button(
+            label="Teacher Copy",
+            data=render_assessment_pdf(_psi, is_teacher=True).getvalue(),
+            file_name="PSI_Teacher_Copy.pdf",
+            mime="application/pdf",
+            key="psi_teacher_dl"
+        )
+    with _col2:
+        st.download_button(
+            label="Student Recording Copy",
+            data=render_assessment_pdf(_psi, is_teacher=False).getvalue(),
+            file_name="PSI_Student_Copy.pdf",
+            mime="application/pdf",
+            key="psi_student_dl"
+        )
+    with _col3:
+        from pypdf import PdfWriter, PdfReader
+        _writer = PdfWriter()
+        for _pdf in [render_assessment_pdf(_psi, is_teacher=True).getvalue(),
+                     render_assessment_pdf(_psi, is_teacher=False).getvalue()]:
+            _reader = PdfReader(BytesIO(_pdf))
+            for _page in _reader.pages:
+                _writer.add_page(_page)
+        _both_buf = BytesIO()
+        _writer.write(_both_buf)
+        st.download_button(
+            label="Download Both",
+            data=_both_buf.getvalue(),
+            file_name="PSI_Both.pdf",
+            mime="application/pdf",
+            key="psi_both_dl"
+        )
+    st.divider()
 
     if st.button("Create Diagnostic Assessment", key="generate_diagnostic_btn", type="primary"):
         with st.spinner("Building diagnostic assessment..."):
@@ -526,11 +567,11 @@ def display_class_page():
                         key=f"dl_both_{test['assessment_id']}_{idx}",
                         use_container_width=True
                     )
-    
+
 # Batch Print Practice Lists Section
     st.header("Batch Print Practice Lists")
     st.write("Generate printable practice list cards for multiple students at once.")
-    
+
     if students:
         student_options = {f"{s.get('name')} ({s.get('student_id')})": s.get('student_id') for s in students}
         selected_students = st.multiselect(
@@ -539,7 +580,7 @@ def display_class_page():
             default=[],
             key="batch_print_students"
         )
-        
+
         if selected_students:
             # --- Mode selector ---
             batch_mode = st.radio(
@@ -551,7 +592,7 @@ def display_class_page():
             practice_batch = []
             missing_lists = []
             generation_errors = []
-            
+
             if batch_mode == "Use existing saved lists":
                 for student_display in selected_students:
                     student_id = student_options[student_display]
@@ -568,7 +609,7 @@ def display_class_page():
                         })
                     else:
                         missing_lists.append(student_name)
-                
+
                 if missing_lists:
                     st.warning(
                         f"No saved lists found for: {', '.join(missing_lists)}. "
@@ -596,7 +637,7 @@ def display_class_page():
                             group_name = constants.DIAGNOSTIC_GROUPS.get(
                                 target_group, {}
                             ).get('name', target_group.upper())
-                            
+
                             words_raw = spelling_logic.generate_personalized_practice_words(
                                 student_id=student_id,
                                 target_group=target_group,
@@ -610,7 +651,7 @@ def display_class_page():
                                 words = json.loads(clean)
                             else:
                                 words = words_raw
-                                
+
                             list_data = {
                                 'student_name': student_name,
                                 'student_id': student_id,
@@ -672,9 +713,9 @@ def display_student_detail_view(student_id, current_teacher_email):
     """Display student detail view with modular Pipeline workflow."""
     student_name = get_name_for_id(current_teacher_email, student_id) or f"Student {student_id}"
     st.title(student_name)
-    
+
     current_student_group_focus = get_student_current_group_focus(student_id)
-    
+
     def on_group_focus_change():
         update_student_current_group_focus(student_id, st.session_state[f"group_focus_selector_{student_id}"])
         st.rerun()
@@ -691,7 +732,7 @@ def display_student_detail_view(student_id, current_teacher_email):
         format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
         key=f"group_focus_selector_{student_id}",
         on_change=on_group_focus_change
-    )   
+    )
 
     history = get_student_history(student_id, teacher_id=current_teacher_email, admin=False)
     target_group = current_student_group_focus
@@ -710,23 +751,23 @@ def display_student_detail_view(student_id, current_teacher_email):
                     st.session_state[classroom_data_key] = shadow_data_result
             except Exception as e:
                 st.error(f"Failed to fetch classroom data: {e}.")
-    
+
     st.markdown("---")
-    
+
     st.subheader("AI-Generated Practice Lists")
     if st.button("Generate Personalized Practice Lists", key=f"gen_practice_{student_id}"):
         with st.spinner("Generating personalized practice lists with AI..."):
             try:
                 teacher_notes = get_latest_teacher_notes(student_id)
                 db_struggling_words = get_struggling_words(student_id)
-                mastered_words = st.session_state.get("mastered_words_input", "") 
+                mastered_words = st.session_state.get("mastered_words_input", "")
                 unit_description = st.session_state.get("unit_description", "")
 
                 # TEMP DEBUG - remove once confirmed
                 print(f"\n🔍 [DEBUG] student_id={student_id}")
                 print(f"🔍 [DEBUG] teacher_notes={teacher_notes!r}")
                 print(f"🔍 [DEBUG] db_struggling_words={db_struggling_words!r}\n")
-                
+
                 personalized_words = generate_personalized_practice_words(
                     student_id=student_id,
                     target_group=target_group,
@@ -736,7 +777,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                     unit_description=unit_description,
                     custom_words_input=None
                 )
-                
+
                 st.session_state[f'practice_list_{student_id}'] = {
                     "student_name": student_name, "group_title": target_group,
                     "words": personalized_words,
@@ -751,7 +792,7 @@ def display_student_detail_view(student_id, current_teacher_email):
     if st.session_state.get(practice_list_key):
         practice_data = st.session_state[practice_list_key]
         st.write(f"**Practice List for {practice_data['student_name']} ({practice_data['group_title']}):**")
-        
+
         # Editable widget for practice words
         default_words_text = ", ".join(practice_data['words'])
         edited_words = st.text_area(
@@ -760,7 +801,7 @@ def display_student_detail_view(student_id, current_teacher_email):
             height=150,
             key=f"edit_practice_words_{student_id}"
         )
-        
+
         # List Title input
         default_title = f"{practice_data['group_title'].upper()} Practice - {datetime.datetime.now().strftime('%Y-%m-%d')}"
         list_title = st.text_input(
@@ -768,7 +809,7 @@ def display_student_detail_view(student_id, current_teacher_email):
             value=default_title,
             key=f"practice_list_title_{student_id}"
         )
-        
+
         col_save, col_clear = st.columns([2, 1])
         with col_save:
             if st.button("Save Practice List", key=f"save_practice_{student_id}", type="primary"):
@@ -777,7 +818,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                     words_list = [w.strip() for w in edited_words.split(",") if w.strip()]
                 else:
                     words_list = [w.strip() for w in edited_words.split("\n") if w.strip()]
-                
+
                 if words_list and list_title.strip():
                     if save_student_practice_list(
                         student_id=student_id,
@@ -793,17 +834,17 @@ def display_student_detail_view(student_id, current_teacher_email):
                         st.error("Failed to save practice list.")
                 else:
                     st.warning("Please provide both a title and at least one word.")
-        
+
         with col_clear:
             if st.button("Clear Practice List", key=f"clear_practice_{student_id}"):
                 del st.session_state[practice_list_key]
                 st.rerun()
-    
+
     # Saved Practice Lists History
     st.markdown("---")
     st.subheader("Saved Practice Lists")
     saved_lists = get_student_practice_lists(student_id)
-    
+
     if saved_lists:
         for saved_list in saved_lists:
             with st.expander(f"{saved_list['list_name']} (Created: {saved_list['created_at']})"):
@@ -811,7 +852,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                 st.write("**Words:**")
                 for word in saved_list['words']:
                     st.write(f"- {word}")
-                
+
                 col_edit, col_delete = st.columns([1, 1])
                 with col_edit:
                     if st.button("Edit", key=f"edit_saved_{saved_list['id']}"):
@@ -843,8 +884,8 @@ def display_student_detail_view(student_id, current_teacher_email):
         for assessment in reversed(history):
             # 1. Fetch Teacher Notes (checks all common DB column names)
             teacher_notes = (
-                assessment.get('teacher_refined_notes') 
-                or assessment.get('teacher_notes') 
+                assessment.get('teacher_refined_notes')
+                or assessment.get('teacher_notes')
                 or assessment.get('refinement_notes')
                 or assessment.get('notes')
                 or assessment.get('analysis')
@@ -862,14 +903,14 @@ def display_student_detail_view(student_id, current_teacher_email):
             raw_name = (
                 extracted_title
                 or assessment.get('list_name')
-                or assessment.get('test_name') 
-                or assessment.get('assessment_type') 
+                or assessment.get('test_name')
+                or assessment.get('assessment_type')
                 or assessment.get('stage')
             )
 
             ignored_names = [
-                "ad-hoc assessment", "ad-hoc", "adhoc", 
-                "unspecified assessment list", "select a saved list...", 
+                "ad-hoc assessment", "ad-hoc", "adhoc",
+                "unspecified assessment list", "select a saved list...",
                 "none", "", "n/a"
             ]
 
@@ -895,8 +936,8 @@ def display_student_detail_view(student_id, current_teacher_email):
                 # Student Responses Table Display
                 st.subheader("Student Responses")
                 responses_raw = (
-                    assessment.get('student_responses') 
-                    or assessment.get('transcriptions') 
+                    assessment.get('student_responses')
+                    or assessment.get('transcriptions')
                     or assessment.get('raw_transcription')
                 )
 
@@ -925,7 +966,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                     st.code(responses_raw, language='text')
                 else:
                     st.info("No student responses recorded for this assessment.")
-        
+
                 # Teacher Notes Display
                 st.subheader("Teacher Notes")
                 if teacher_notes and str(teacher_notes).strip():
@@ -970,7 +1011,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                 with col_edit_btn:
                     with st.popover("Edit Assessment", use_container_width=True):
                         st.subheader("Edit Assessment Details")
-                        
+
                         initial_date = assessment.get("test_date")
                         if isinstance(initial_date, str):
                             try:
@@ -985,7 +1026,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                         if current_suggested not in group_keys:
                             current_suggested = "g1"
                         edit_group = st.selectbox(
-                            "Target Focus Group", 
+                            "Target Focus Group",
                             options=group_keys,
                             format_func=lambda k: f"{k.upper()}: {constants.DIAGNOSTIC_GROUPS[k]['name']}",
                             index=group_keys.index(current_suggested),
@@ -1029,10 +1070,10 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     5. STAGE 4: Override UI (Teacher Refinement, Calibration, & Save)
     """
     st.header("Assessment Evaluation")
-    
+
     transcription_key = f"edited_transcription_{student_id}"
     file_cache_key = f"uploaded_file_cache_{student_id}"
-    
+
     if st.session_state.get(transcription_key):
         st.session_state['student_attempts_for_report'] = st.session_state[transcription_key]
     if 'student_attempts_for_report' not in st.session_state:
@@ -1078,7 +1119,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                     raw_words = list_data.get('word_list') or list_data.get('target_words') or ""
                     if isinstance(raw_words, list):
                         raw_words = ", ".join(raw_words)
-                    
+
                     st.session_state.intended_words_input = raw_words
                     st.session_state.current_list_id = list_data['id']
                     st.session_state.last_used_assessment_list_id = list_data['id']
@@ -1107,35 +1148,35 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             st.session_state.processed_intended_words = ""
 
         st.markdown("---")
-        
+
         assessment_date = st.date_input(
             "Assessment Date",
             value=datetime.datetime.now().date(),
             key=f"assessment_date_{student_id}"
         )
-        
+
         uploaded_file = st.file_uploader(
-            "Upload photo of student's handwritten test sheet (PNG, JPG, JPEG):", 
-            type=['png', 'jpg', 'jpeg'], 
+            "Upload photo of student's handwritten test sheet (PNG, JPG, JPEG):",
+            type=['png', 'jpg', 'jpeg'],
             key=f"raw_uploader_{student_id}"
         )
-        
+
         if uploaded_file is not None:
             st.session_state[file_cache_key] = uploaded_file
 
         active_file = st.session_state.get(file_cache_key)
-        
+
         if active_file:
             clean_base64, clean_img = preprocess_image(active_file)
             col_img, col_text = st.columns([1, 1])
-            
+
             with col_img:
                 st.image(clean_img, caption="Cleaned Image Input")
                 if st.button("Read Handwriting via OCR", key=f"read_handwriting_{student_id}"):
                     with st.spinner('Decoding student handwriting...'):
                         try:
                             ocr_data = transcribe_handwriting(
-                                clean_base64, 
+                                clean_base64,
                                 intended_words=st.session_state.get('processed_intended_words', "")
                             )
                             if ocr_data:
@@ -1145,7 +1186,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                                 st.rerun()
                         except Exception as e:
                             st.error(f"OCR Error: {e}")
-            
+
             with col_text:
                 st.subheader("Verify & Edit Transcription")
                 current_data = st.session_state.get(transcription_key)
@@ -1191,9 +1232,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         st.write("")
         st.write("")
         run_pipeline = st.button(
-            "Click to Run", 
-            key=f"run_pipeline_{student_id}", 
-            type="primary", 
+            "Click to Run",
+            key=f"run_pipeline_{student_id}",
+            type="primary",
             use_container_width=True
         )
 
@@ -1296,9 +1337,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                         ai_target = "g1"
                         if isinstance(analysis_result, dict):
                             ai_notes = (
-                                analysis_result.get("prescriptive_feedback") 
-                                or analysis_result.get("teacher_notes") 
-                                or analysis_result.get("notes") 
+                                analysis_result.get("prescriptive_feedback")
+                                or analysis_result.get("teacher_notes")
+                                or analysis_result.get("notes")
                                 or ""
                             )
                             ai_target = analysis_result.get("suggested_next", "g1") or analysis_result.get("phonetic_stage_level", "g1")
@@ -1326,7 +1367,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     # -----------------------------------------------------------------------------
     if st.session_state.get("analysis_result") or st.session_state.get("evaluator_result"):
         st.markdown("---")
-        
+
         # 1. Render G0-G8 Stage Accuracy Chart & Feature Badges
         eval_data = st.session_state.get("evaluator_result")
         if eval_data and isinstance(eval_data, dict):
@@ -1348,9 +1389,9 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
 
             # Check if student attempts have number metadata (number-aware OCR output)
             is_numbered = (
-                isinstance(student_attempts_raw, list) and 
-                student_attempts_raw and 
-                isinstance(student_attempts_raw[0], dict) and 
+                isinstance(student_attempts_raw, list) and
+                student_attempts_raw and
+                isinstance(student_attempts_raw[0], dict) and
                 'number' in student_attempts_raw[0]
             )
 
@@ -1363,7 +1404,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                         if num_str.isdigit():
                             attempt = item.get('attempt') or item.get('word') or ''
                             attempts_by_number[int(num_str)] = attempt.strip().lower()
-                
+
                 # Pair by item number
                 highlighted_content += "<ul style='list-style-type: none; padding-left: 0; margin: 0; font-family: monospace;'>"
                 for idx, target in enumerate(intended_list, start=1):
@@ -1469,15 +1510,15 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         # ---------------------------------------------------------------------
         if isinstance(analysis_obj, dict):
             raw_feedback = (
-                analysis_obj.get("prescriptive_feedback") 
-                or analysis_obj.get("teacher_notes") 
-                or analysis_obj.get("notes") 
+                analysis_obj.get("prescriptive_feedback")
+                or analysis_obj.get("teacher_notes")
+                or analysis_obj.get("notes")
                 or ""
             )
         else:
             raw_feedback = (
-                getattr(analysis_obj, "prescriptive_feedback", None) 
-                or getattr(analysis_obj, "teacher_notes", "") 
+                getattr(analysis_obj, "prescriptive_feedback", None)
+                or getattr(analysis_obj, "teacher_notes", "")
                 or ""
             )
 
@@ -1541,7 +1582,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 "teacher_notes": getattr(st.session_state.get('analysis_result'), 'teacher_notes', ''),
                 "struggling_words": struggling_words_str,
             }
-            
+
             class AssessmentDataObject:
                 def __init__(self, d):
                     self.__dict__ = d
@@ -1591,7 +1632,6 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             else:
                 st.error("Failed to save assessment. Please check terminal logs.")
 
-
 def render_orthographic_analysis(evaluation_result: dict):
     """
     Renders the Granular Orthographic Analysis view:
@@ -1610,7 +1650,7 @@ def render_orthographic_analysis(evaluation_result: dict):
     # 1. FILTER STRICTLY FOR ATTEMPTED WORDS
     # ---------------------------------------------------------
     attempted_word_evals = [
-        w for w in word_evals 
+        w for w in word_evals
         if w.get("student_attempt") and str(w.get("student_attempt")).strip()
     ]
 
@@ -1726,22 +1766,22 @@ def display_admin_page():
     if st.session_state.get('user_email', '').lower().strip() != ADMIN_EMAIL.lower().strip():
         st.error("Admin access required.")
         return
-    
+
     st.header("Admin Dashboard")
-    
+
     # Teacher Account Management Section
     st.subheader("Teacher Account Management")
     with st.expander("Create Teacher Account", expanded=False):
         with st.form("create_teacher_form", clear_on_submit=True):
             teacher_email = st.text_input("Teacher Email (required)", placeholder="teacher@example.com")
             teacher_name = st.text_input("Teacher Full Name (optional)", placeholder="Jane Doe")
-            
+
             if st.form_submit_button("Create Teacher Account", type="primary"):
                 if teacher_email:
                     # Normalize email to lowercase
                     normalized_email = teacher_email.lower().strip()
                     name = teacher_name.strip() if teacher_name else normalized_email.split('@')[0].title()
-                    
+
                     if register_teacher(normalized_email, name):
                         st.success(f"Teacher account created for {normalized_email}")
                         st.rerun()
@@ -1749,14 +1789,14 @@ def display_admin_page():
                         st.error("Failed to create teacher account. Email may already exist.")
                 else:
                     st.error("Teacher email is required.")
-    
+
     st.markdown("---")
-    
+
     with st.expander("CSV Data Management"):
         st.subheader("CSV File Status")
         students_csv_exists = os.path.exists("students.csv")
         assessments_csv_exists = os.path.exists("assessments.csv")
-        
+
         col_status1, col_status2 = st.columns(2)
         with col_status1:
             if students_csv_exists:
@@ -1768,7 +1808,7 @@ def display_admin_page():
                 st.success("assessments.csv: FOUND")
             else:
                 st.error("assessments.csv: MISSING")
-        
+
         st.markdown("---")
         if st.button("FORCE IMPORT FROM CSV", type="primary", use_container_width=True):
             with st.spinner("Importing data..."):
@@ -1779,9 +1819,9 @@ def display_admin_page():
                 st.write(f"• Assessments imported: {result['assessments']}")
                 st.write(f"• Identity records synced: {sync_result['created']}")
             st.rerun()
-    
+
     st.markdown("---")
-    
+
     with st.expander("Database Maintenance"):
         stats = get_database_stats()
         col_s1, col_s2 = st.columns(2)
@@ -1791,21 +1831,21 @@ def display_admin_page():
         with col_s2:
             st.metric("Orphaned Students", stats.get('orphaned_students', 0))
             st.metric("Orphaned Assessments", stats.get('orphaned_assessments', 0))
-        
+
         if st.button("Fix All Teacher IDs", use_container_width=True):
             result = fix_all_teacher_ids()
             st.success(f"Fixed! Synced {result['students_synced']} students.")
             st.rerun()
-    
+
     st.markdown("---")
-    
+
     # Student Management Section
     st.subheader("Student Management")
     with st.expander("Student Management Control Panel", expanded=False):
         # Add Student under Teacher
         st.write("### Add New Student")
         all_teachers_list = get_all_teachers()
-        
+
         if not all_teachers_list:
             st.warning("No teachers available. Create a teacher account first.")
         else:
@@ -1819,7 +1859,7 @@ def display_admin_page():
                 with col_group:
                     group_options = list(constants.DIAGNOSTIC_GROUPS.keys())
                     selected_group = st.selectbox("Starting Group", options=group_options, index=1)
-                
+
                 if st.form_submit_button("Add Student", type="primary"):
                     if new_student_name:
                         teacher_email = teacher_options[selected_teacher]
@@ -1830,38 +1870,38 @@ def display_admin_page():
                             st.error("Failed to add student.")
                     else:
                         st.error("Student name is required.")
-        
+
         st.markdown("---")
-        
+
         # Move & Delete Student List
         st.write("### All Students")
         all_students = get_all_students_for_allocation()
-        
+
         if not all_students:
             st.info("No students found in database.")
         else:
             st.write(f"{len(all_students)} students total")
-            
+
             for i, student in enumerate(all_students):
                 with st.container():
                     col_name, col_teacher, col_move, col_delete = st.columns([2, 2, 2, 1])
-                    
+
                     with col_name:
                         st.markdown(f"**{student['name']}**")
                         st.caption(f"ID: {student['student_id']}")
-                    
+
                     with col_teacher:
                         current_teacher = student['teacher_id'] or "Unassigned"
                         st.write(f"Teacher: {current_teacher}")
-                    
+
                     with col_move:
                         teacher_display_options = ["Unassigned"] + [f"{t['name']} ({t['email']})" for t in all_teachers_list]
                         teacher_emails = [None] + [t['email'] for t in all_teachers_list]
-                        
+
                         current_idx = 0
                         if student['teacher_id'] and student['teacher_id'] in teacher_emails:
                             current_idx = teacher_emails.index(student['teacher_id'])
-                        
+
                         selected_display = st.selectbox(
                             "Move to:",
                             options=teacher_display_options,
@@ -1869,12 +1909,12 @@ def display_admin_page():
                             key=f"move_select_{i}_{student['student_id']}",
                             label_visibility="collapsed"
                         )
-                    
+
                     with col_delete:
                         if st.button("Delete", key=f"delete_btn_{i}_{student['student_id']}", type="secondary"):
                             st.session_state[f"confirm_delete_{student['student_id']}"] = True
                             st.rerun()
-                    
+
                     # Update button for move
                     col_move_btn, _ = st.columns([1, 3])
                     with col_move_btn:
@@ -1885,7 +1925,7 @@ def display_admin_page():
                                 st.rerun()
                             else:
                                 st.error("Failed to move student.")
-                    
+
                     # Delete confirmation
                     if st.session_state.get(f"confirm_delete_{student['student_id']}"):
                         st.warning(f"⚠️ Are you sure you want to delete {student['name']}? This will also delete all their assessment records.")
@@ -1902,11 +1942,11 @@ def display_admin_page():
                             if st.button("Cancel", key=f"confirm_cancel_{student['student_id']}"):
                                 del st.session_state[f"confirm_delete_{student['student_id']}"]
                                 st.rerun()
-                    
+
                     st.divider()
 
     st.markdown("---")
-    
+
     st.subheader("Platform Administrator Report: Active AI Corrections")
     from ai_learning_engine import get_unified_learning_ledger
     ledger_data = get_unified_learning_ledger()
