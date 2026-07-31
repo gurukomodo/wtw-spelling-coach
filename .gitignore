@@ -27,3 +27,8 @@ student_map.json
 spelling_coach.db
 .aider*
 .env.keys
+
+data/
+*.pyc
+*.pdf
+*.csv

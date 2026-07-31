@@ -320,6 +320,7 @@ def show_login_page():
         st.info("No accounts found. Please register first.")
 
     if st.button("← Back to Registration", key="back_to_reg"):
+        st.session_state.go_to_login = False
         if 'reg_teacher_select' in st.session_state:
             del st.session_state['reg_teacher_select']
         st.rerun()
