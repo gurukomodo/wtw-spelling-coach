@@ -634,8 +634,145 @@ def display_class_page():
         st.write("**Pages ready for student identification:**")
         for p in pages:
             st.caption(f"Page {p['page_num']} — ready for OCR")
+
         if st.button("Identify Students", key="identify_students_btn", type="primary"):
-            st.info("Step 3 coming next — OCR will read each student's name.")
+            import base64
+            from spelling_logic import transcribe_handwriting
+
+            students = get_all_students_by_teacher(
+                st.session_state.get("user_email", "")
+            )
+            student_names = [s["name"] for s in students]
+
+            identified = []
+            progress = st.progress(0, text="Reading student names...")
+
+            for i, p in enumerate(pages):
+                progress.progress(
+                    (i + 1) / len(pages),
+                    text=f"Reading page {p['page_num']} of {len(pages)}..."
+                )
+                try:
+                    # Convert PDF page bytes to base64 image for OCR
+                    import fitz  # PyMuPDF
+                    doc = fitz.open(stream=p["pdf_bytes"], filetype="pdf")
+                    mat = fitz.Matrix(2, 2)  # 2x zoom for better OCR
+                    pix = doc[0].get_pixmap(matrix=mat)
+                    img_bytes = pix.tobytes("png")
+                    img_b64 = base64.b64encode(img_bytes).decode()
+
+                    # Ask the vision model to read the student name
+                    from model_manager import run_model_chain
+                    name_prompt = f"""This is a student spelling test page.
+Look at the top of the page where it says 'Name: ___'.
+Read the student's handwritten name.
+The possible students in this class are: {', '.join(student_names)}.
+Return ONLY the student name as written, nothing else.
+If you cannot read the name clearly, return 'Unknown'."""
+
+                    messages = [{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/png;base64,{img_b64}"
+                            }},
+                            {"type": "text", "text": name_prompt}
+                        ]
+                    }]
+
+                    raw_name = run_model_chain("vision", messages, temperature=0.1)
+                    raw_name = raw_name.strip() if raw_name else "Unknown"
+
+                    # Fuzzy match against known student names
+                    matched_name = "Unknown"
+                    matched_id = None
+                    if raw_name and raw_name != "Unknown":
+                        for s in students:
+                            if raw_name.lower() in s["name"].lower() or \
+                               s["name"].lower() in raw_name.lower():
+                                matched_name = s["name"]
+                                matched_id = s["student_id"]
+                                break
+
+                    identified.append({
+                        "page_num": p["page_num"],
+                        "pdf_bytes": p["pdf_bytes"],
+                        "raw_name": raw_name,
+                        "matched_name": matched_name,
+                        "matched_id": matched_id,
+                    })
+
+                except Exception as e:
+                    identified.append({
+                        "page_num": p["page_num"],
+                        "pdf_bytes": p["pdf_bytes"],
+                        "raw_name": "Error",
+                        "matched_name": "Unknown",
+                        "matched_id": None,
+                    })
+                    print(f"OCR error on page {p['page_num']}: {e}")
+
+            progress.empty()
+            st.session_state["identified_pages"] = identified
+            st.session_state["scanned_pages"] = None
+            st.rerun()
+
+    if st.session_state.get("identified_pages"):
+        identified = st.session_state["identified_pages"]
+        st.subheader("Confirm Student Matches")
+        st.write(
+            "The app has read each student's name from their test page. "
+            "Please confirm or correct each match before saving."
+        )
+
+        students = get_all_students_by_teacher(
+            st.session_state.get("user_email", "")
+        )
+        student_options = ["-- Unknown --"] + [s["name"] for s in students]
+
+        confirmed = []
+        for p in identified:
+            col1, col2, col3 = st.columns([1, 2, 2])
+            with col1:
+                st.caption(f"Page {p['page_num']}")
+            with col2:
+                st.caption(f"OCR read: **{p['raw_name']}**")
+            with col3:
+                default_idx = student_options.index(p["matched_name"]) \
+                    if p["matched_name"] in student_options else 0
+                selected = st.selectbox(
+                    f"Match page {p['page_num']}",
+                    options=student_options,
+                    index=default_idx,
+                    key=f"match_page_{p['page_num']}",
+                    label_visibility="collapsed"
+                )
+                matched_id = next(
+                    (s["student_id"] for s in students if s["name"] == selected),
+                    None
+                )
+                confirmed.append({
+                    **p,
+                    "confirmed_name": selected,
+                    "confirmed_id": matched_id,
+                })
+
+        if st.button(
+            "Confirm & Save to Student Profiles",
+            key="confirm_scan_btn",
+            type="primary"
+        ):
+            st.session_state["confirmed_scan_pages"] = confirmed
+            st.session_state["identified_pages"] = None
+            st.success(
+                "Matches confirmed! Go to each student's page to run "
+                "the assessment analysis. Their scanned page is ready and waiting."
+            )
+            for c in confirmed:
+                if c["confirmed_id"]:
+                    st.session_state[
+                        f"scanned_pdf_{c['confirmed_id']}"
+                    ] = c["pdf_bytes"]
 
     st.divider()
 
@@ -1270,6 +1407,44 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             key=f"assessment_date_{student_id}"
         )
 
+        # Check if a scanned PDF page was routed here from the class scan upload
+        scanned_pdf_key = f"scanned_pdf_{student_id}"
+        if st.session_state.get(scanned_pdf_key) and not st.session_state.get(file_cache_key):
+            try:
+                import fitz
+                from io import BytesIO
+                import base64
+
+                pdf_bytes = st.session_state[scanned_pdf_key]
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                mat = fitz.Matrix(2, 2)
+                pix = doc[0].get_pixmap(matrix=mat)
+                img_bytes = pix.tobytes("png")
+
+                # Wrap in a file-like object that matches what st.file_uploader returns
+                class _FakeFile:
+                    def __init__(self, data, name):
+                        self._data = data
+                        self.name = name
+                        self.type = "image/png"
+                        self.size = len(data)
+                    def read(self):
+                        return self._data
+                    def getvalue(self):
+                        return self._data
+                    def seek(self, *a): pass
+
+                fake_file = _FakeFile(img_bytes, f"scan_{student_id}.png")
+                st.session_state[file_cache_key] = fake_file
+                del st.session_state[scanned_pdf_key]
+                st.success(
+                    "📄 Scanned test page loaded from class upload. "
+                    "Review the image below and click 'Read Handwriting via OCR'."
+                )
+                st.rerun()
+            except Exception as e:
+                st.warning(f"Could not load scanned page: {e}")
+                
         uploaded_file = st.file_uploader(
             "Upload photo of student's handwritten test sheet (PNG, JPG, JPEG):",
             type=['png', 'jpg', 'jpeg'],
