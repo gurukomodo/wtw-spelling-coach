@@ -604,10 +604,38 @@ def display_class_page():
             st.rerun()
 
     if st.session_state.get("pending_scan"):
-        st.warning(
-            f"Scan '{st.session_state.get('pending_scan_name')}' is ready to process. "
-            "This feature will split the PDF and identify students in the next step."
-        )
+        from pypdf import PdfReader, PdfWriter
+        from io import BytesIO
+
+        pdf_bytes = st.session_state["pending_scan"]
+        reader = PdfReader(BytesIO(pdf_bytes))
+        num_pages = len(reader.pages)
+
+        st.info(f"Found {num_pages} page(s) in the scan. Splitting into individual student pages...")
+
+        pages = []
+        for i, page in enumerate(reader.pages):
+            writer = PdfWriter()
+            writer.add_page(page)
+            page_buf = BytesIO()
+            writer.write(page_buf)
+            pages.append({
+                "page_num": i + 1,
+                "pdf_bytes": page_buf.getvalue()
+            })
+
+        st.session_state["scanned_pages"] = pages
+        st.session_state["pending_scan"] = None
+        st.rerun()
+
+    if st.session_state.get("scanned_pages"):
+        pages = st.session_state["scanned_pages"]
+        st.success(f"Successfully split into {len(pages)} individual page(s).")
+        st.write("**Pages ready for student identification:**")
+        for p in pages:
+            st.caption(f"Page {p['page_num']} — ready for OCR")
+        if st.button("Identify Students", key="identify_students_btn", type="primary"):
+            st.info("Step 3 coming next — OCR will read each student's name.")
 
     st.divider()
 
