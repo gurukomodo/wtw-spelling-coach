@@ -1424,15 +1424,19 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 # Wrap in a file-like object that matches what st.file_uploader returns
                 class _FakeFile:
                     def __init__(self, data, name):
-                        self._data = data
+                        self._buf = BytesIO(data)
                         self.name = name
                         self.type = "image/png"
                         self.size = len(data)
-                    def read(self):
-                        return self._data
+                    def read(self, *a):
+                        return self._buf.read(*a)
+                    def seek(self, *a):
+                        return self._buf.seek(*a)
+                    def tell(self):
+                        return self._buf.tell()
                     def getvalue(self):
-                        return self._data
-                    def seek(self, *a): pass
+                        self._buf.seek(0)
+                        return self._buf.read()
 
                 fake_file = _FakeFile(img_bytes, f"scan_{student_id}.png")
                 st.session_state[file_cache_key] = fake_file
@@ -1444,7 +1448,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
                 st.rerun()
             except Exception as e:
                 st.warning(f"Could not load scanned page: {e}")
-                
+
         uploaded_file = st.file_uploader(
             "Upload photo of student's handwritten test sheet (PNG, JPG, JPEG):",
             type=['png', 'jpg', 'jpeg'],
