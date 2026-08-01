@@ -1465,6 +1465,28 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
             col_img, col_text = st.columns([1, 1])
 
             with col_img:
+                # Rotation control
+                rotation = st.select_slider(
+                    "Rotate image",
+                    options=[0, 90, 180, 270],
+                    value=st.session_state.get(f"img_rotation_{student_id}", 0),
+                    key=f"img_rotation_{student_id}"
+                )
+                
+                if rotation != 0:
+                    from PIL import Image as PILImage
+                    import io
+                    if isinstance(clean_img, bytes):
+                        img = PILImage.open(io.BytesIO(clean_img))
+                    else:
+                        img = clean_img
+                    clean_img = img.rotate(-rotation, expand=True)
+                    # Also rotate the base64 for OCR
+                    buf = io.BytesIO()
+                    clean_img.save(buf, format="PNG")
+                    import base64
+                    clean_base64 = base64.b64encode(buf.getvalue()).decode()
+
                 st.image(clean_img, caption="Cleaned Image Input")
                 if st.button("Read Handwriting via OCR", key=f"read_handwriting_{student_id}"):
                     with st.spinner('Decoding student handwriting...'):
