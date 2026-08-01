@@ -1,5 +1,8 @@
-#!/bin/bash
-# Runs the UnBoxEd spelling coach app with dotenvx decrypting .env on the fly.
-# Usage: ./run.sh
+#!/bin/zsh
 set -e
+
+# Activate the local virtual environment
+source .venv/bin/activate
+
+# Inject decrypted secrets and start Streamlit
 dotenvx run -- streamlit run app.py

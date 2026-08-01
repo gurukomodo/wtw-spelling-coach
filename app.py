@@ -579,37 +579,37 @@ def display_class_page():
                         use_container_width=True
                     )
 
-        st.header("Upload Scanned Class Test")
-        st.write(
-            "Scan your completed class test papers as a single PDF (one student per page) "
-            "and upload it here. The app will split it into individual pages, read each "
-            "student's name, and route their attempts to the correct student profile for analysis."
+    st.header("Upload Scanned Class Test")
+    st.write(
+        "Scan your completed class test papers as a single PDF (one student per page) "
+        "and upload it here. The app will split it into individual pages, read each "
+        "student's name, and route their attempts to the correct student profile for analysis."
+    )
+
+    uploaded_scan = st.file_uploader(
+        "Upload scanned test PDF",
+        type=["pdf"],
+        key="class_scan_upload"
+    )
+
+    if uploaded_scan:
+        st.success(f"Received: {uploaded_scan.name} ({round(uploaded_scan.size / 1024, 1)} KB)")
+        st.info(
+            "Click 'Process Scan' to split the PDF into individual student pages "
+            "and identify each student."
+        )
+        if st.button("Process Scan", key="process_scan_btn", type="primary"):
+            st.session_state["pending_scan"] = uploaded_scan.read()
+            st.session_state["pending_scan_name"] = uploaded_scan.name
+            st.rerun()
+
+    if st.session_state.get("pending_scan"):
+        st.warning(
+            f"Scan '{st.session_state.get('pending_scan_name')}' is ready to process. "
+            "This feature will split the PDF and identify students in the next step."
         )
 
-        uploaded_scan = st.file_uploader(
-            "Upload scanned test PDF",
-            type=["pdf"],
-            key="class_scan_upload"
-        )
-
-        if uploaded_scan:
-            st.success(f"Received: {uploaded_scan.name} ({round(uploaded_scan.size / 1024, 1)} KB)")
-            st.info(
-                "Click 'Process Scan' to split the PDF into individual student pages "
-                "and identify each student."
-            )
-            if st.button("Process Scan", key="process_scan_btn", type="primary"):
-                st.session_state["pending_scan"] = uploaded_scan.read()
-                st.session_state["pending_scan_name"] = uploaded_scan.name
-                st.rerun()
-
-        if st.session_state.get("pending_scan"):
-            st.warning(
-                f"Scan '{st.session_state.get('pending_scan_name')}' is ready to process. "
-                "This feature will split the PDF and identify students in the next step."
-            )
-
-        st.divider()
+    st.divider()
 
 # Batch Print Practice Lists Section
     st.header("Batch Print Practice Lists")

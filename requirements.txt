@@ -1,4 +1,3 @@
-crewai
 langchain_groq
 pydantic
 python-dotenv
@@ -19,6 +18,4 @@ pyzbar==0.1.9
 opencv-python-headless==4.9.0.80
 svglib==1.5.1
 pypdf
-supabase
-supabase
 supabase
