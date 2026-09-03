@@ -1,74 +1,87 @@
 import os
 import json
-from dotenv import load_dotenv
-from supabase import create_client
 import sqlite3
+import tomllib  # Python 3.11+ built-in
+from supabase import create_client
 
-load_dotenv()
+# 1. Load directly from secrets.toml
+secrets_path = ".streamlit/secrets.toml"
+if not os.path.exists(secrets_path):
+    raise FileNotFoundError(f"Could not find {secrets_path}")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+with open(secrets_path, "rb") as f:
+    secrets = tomllib.load(f)
+
+# Handle both flat structure and [supabase] header block
+sb_config = secrets.get("supabase", secrets)
+
+SUPABASE_URL = sb_config.get("SUPABASE_URL") or sb_config.get("supabase_url")
+SUPABASE_KEY = (
+    sb_config.get("SUPABASE_KEY") 
+    or sb_config.get("supabase_key") 
+    or sb_config.get("SUPABASE_ANON_KEY")
+    or sb_config.get("SUPABASE_SERVICE_KEY")
+)
+
+# 2. Verify values before passing to Supabase
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError(
+        f"Missing credentials in secrets.toml.\n"
+        f"Found URL: {SUPABASE_URL}\n"
+        f"Available keys in secrets.toml: {list(sb_config.keys())}"
+    )
+
+# 3. Connect directly
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Connect to local SQLite database
+# Connect to local SQLite database using Row factory for safe named access
 conn = sqlite3.connect('data/spelling_coach.db')
+conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
 
-# Read all rows from local database
-cursor.execute("SELECT * FROM student_identity")
-student_identity_rows = cursor.fetchall()
+def migrate_table(table_name, json_fields=None):
+    cursor.execute(f"SELECT * FROM {table_name}")
+    rows = cursor.fetchall()
+    
+    if not rows:
+        print(f"No records found in local table '{table_name}'. Skipping.")
+        return 0
 
-cursor.execute("SELECT * FROM assessments")
-assessments_rows = cursor.fetchall()
+    batch = []
+    for row in rows:
+        record = dict(row)
+        
+        # Parse text string back into valid JSON/list objects if required by Supabase
+        if json_fields:
+            for field in json_fields:
+                if field in record and isinstance(record[field], str):
+                    try:
+                        record[field] = json.loads(record[field])
+                    except (json.JSONDecodeError, TypeError):
+                        pass # Keep as raw string if parsing fails
+                        
+        batch.append(record)
 
-cursor.execute("SELECT * FROM teacher_settings")
-teacher_settings_rows = cursor.fetchall()
+    # Perform a single bulk upsert network request
+    response = supabase.table(table_name).upsert(batch).execute()
+    return len(batch)
 
-# Upsert/insert records into Supabase tables
-def upsert_student_identity(row):
-    data = {
-        "teacher_id": row[1],
-        "student_id": row[2],
-        "real_name": row[3],
-        "pseudonym": row[4],
-        "current_group_focus": row[5]
-    }
-    supabase.table("student_identity").upsert(data).execute()
+try:
+    print("Starting migration to Supabase...")
+    
+    teachers_count = migrate_table("teacher_settings")
+    print(f"✓ Teacher Settings Records Migrated: {teachers_count}")
 
-def upsert_assessments(row):
-    data = {
-        "student_id": row[1],
-        "teacher_id": row[2],
-        "test_date": row[3],
-        "created_at": row[4],
-        "raw_transcription": row[5],
-        "teacher_refined_notes": row[6],
-        "struggling_words": row[7],
-        "test_name": row[8]
-    }
-    supabase.table("assessments").upsert(data).execute()
+    students_count = migrate_table("student_identity")
+    print(f"✓ Student Identity Records Migrated: {students_count}")
 
-def upsert_teacher_settings(row):
-    data = {
-        "teacher_id": row[1],
-        "teacher_name": row[2]
-    }
-    supabase.table("teacher_settings").upsert(data).execute()
+    assessments_count = migrate_table("assessments", json_fields=["struggling_words"])
+    print(f"✓ Assessment Records Migrated: {assessments_count}")
 
-# Upsert/insert all local records into Supabase tables
-for row in student_identity_rows:
-    upsert_student_identity(row)
+    print("\nMigration completed successfully!")
 
-for row in assessments_rows:
-    upsert_assessments(row)
+except Exception as e:
+    print(f"\n❌ Migration failed with error: {e}")
 
-for row in teacher_settings_rows:
-    upsert_teacher_settings(row)
-
-# Print out confirmation counts for each table migrated
-print("Student Identity Records Migrated:", len(student_identity_rows))
-print("Assessment Records Migrated:", len(assessments_rows))
-print("Teacher Settings Records Migrated:", len(teacher_settings_rows))
-
-# Close the local database connection
-conn.close()
+finally:
+    conn.close()
