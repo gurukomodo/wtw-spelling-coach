@@ -378,8 +378,10 @@ def get_student_name(student_id):
         print(f"Error get_student_name: {e}")
         return student_id
 
-def get_name_for_id(student_id):
-    return get_student_name(student_id)
+def get_name_for_id(student_id_or_teacher_id, student_id=None):
+    """Accepts both (student_id) and (teacher_id, student_id) call signatures."""
+    actual_student_id = student_id if student_id is not None else student_id_or_teacher_id
+    return get_student_name(actual_student_id)
 
 def get_sheet_data(*args, **kwargs):
     return []

@@ -4,7 +4,6 @@ import re
 import time
 from model_manager import run_model_chain
 from dotenv import load_dotenv
-from crewai import Agent, Task, Crew
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import streamlit as st
