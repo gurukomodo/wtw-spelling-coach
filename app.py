@@ -6,6 +6,7 @@ import pandas as pd
 import random
 import csv
 import time
+import uuid
 import base64
 import database_manager as db
 import datetime
@@ -13,6 +14,7 @@ import feature_evaluator
 import spelling_logic
 from constants import DIAGNOSTIC_GROUPS, DEFAULT_TEST_WORDS, PSI_WORD_BANK
 from utils import preprocess_image, clean_ai_formatting
+from supabase import create_client, Client
 from spelling_logic import (
     get_ai_discrepancy_feedback,
     transcribe_handwriting,
@@ -1130,6 +1132,20 @@ def display_student_detail_view(student_id, current_teacher_email):
 
     st.divider()
 
+    st.subheader("Upload New Assessment Scan")
+
+# Step 2: File uploader and Supabase save logic
+    uploaded_file = st.file_uploader("Upload student assessment sheet", type=["png", "jpg", "jpeg"])
+    if uploaded_file:
+        result = save_scan_to_supabase(uploaded_file, teacher_id=current_teacher_email, student_id=student_id)
+        if result["error"]:
+            st.error(f"Upload failed: {result['error']}")
+        else:
+            st.success("Scan uploaded successfully!")
+            st.image(result["url"], caption="Uploaded Scan", width=300)
+
+    st.divider()
+
     # Diagnostic History Section
     st.subheader("Diagnostic Assessment History")
     if history:
@@ -1308,6 +1324,67 @@ def display_student_detail_view(student_id, current_teacher_email):
     st.divider()
 
     display_assessment_pipeline(student_id, student_name, current_teacher_email)
+# =============================================================================
+# SUPABASE STORAGE HELPERS
+# =============================================================================
+@st.cache_resource
+def get_supabase_client() -> Client:
+    url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
+    return create_client(url, key)
+
+def save_scan_to_supabase(uploaded_file, teacher_id: str, student_id: str = None) -> dict:
+    """
+    1. Uploads file bytes to 'assessment-scans' bucket.
+    2. Generates a public URL.
+    3. Creates a row in 'assessments' with status='uploaded'.
+    
+    Returns the created assessment database record.
+    """
+    supabase = get_supabase_client()
+
+    # 1. Generate a unique filename to prevent overwriting
+    file_ext = uploaded_file.name.split(".")[-1]
+    unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.{file_ext}"
+    storage_path = f"scans/{unique_name}"
+
+    # 2. Read file bytes and upload to Supabase Storage
+    file_bytes = uploaded_file.getvalue()
+    supabase.storage.from_("assessment-scans").upload(
+        path=storage_path,
+        file=file_bytes,
+        file_options={"content-type": uploaded_file.type}
+    )
+
+    # 3. Get the public file URL
+    file_url = supabase.storage.from_("assessment-scans").get_public_url(storage_path)
+
+    # 4. Insert draft record into the 'assessments' table
+    record = {
+        "teacher_id": str(teacher_id),
+        "student_id": str(student_id) if student_id else None,
+        "file_url": file_url,
+        "status": "uploaded",
+        "raw_transcription": None,
+        "feature_analysis": None
+    }
+
+    res = supabase.table("assessments").insert(record).execute()
+    
+    if res.data and len(res.data) > 0:
+        return res.data[0] # Returns dict containing generated assessment 'id'
+    
+    raise RuntimeError("Failed to create assessment record in Supabase.")
+
+def delete_scan_from_supabase(file_path: str) -> bool:
+    """Removes a scan file from the Supabase storage bucket."""
+    try:
+        supabase = get_supabase_client()
+        supabase.storage.from_("scans").remove([file_path])
+        return True
+    except Exception as e:
+        st.error(f"Error deleting file from storage: {e}")
+        return False
 
     # =============================================================================
     # ASSESSMENT EXECUTION PIPELINE
@@ -1323,6 +1400,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     """
     st.header("Assessment Evaluation")
 
+    # 1. Initialize State & Cache Keys
     transcription_key = f"edited_transcription_{student_id}"
     file_cache_key = f"uploaded_file_cache_{student_id}"
 
@@ -1331,6 +1409,41 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
     if 'student_attempts_for_report' not in st.session_state:
         st.session_state['student_attempts_for_report'] = ""
 
+    # =============================================================================
+    # UNEVALUATED SCANS QUEUE & MANAGEMENT
+    # =============================================================================
+    st.subheader("Pending Assessment Scans")
+
+    # Fetch list of uploaded scans for the current teacher
+    try:
+        supabase = get_supabase_client()
+        scan_files = supabase.storage.from_("scans").list(f"{current_teacher_email}/{student_id or 'unassigned'}")
+    except Exception as e:
+        scan_files = []
+
+    if scan_files:
+        file_map = {f["name"]: f"{current_teacher_email}/{student_id or 'unassigned'}/{f['name']}" for f in scan_files if f["name"] != ".emptyFolderPlaceholder"}
+        
+        selected_filename = st.selectbox("Select an uploaded scan to evaluate:", options=list(file_map.keys()))
+        
+        if selected_filename:
+            selected_path = file_map[selected_filename]
+            public_url = supabase.storage.from_("scans").get_public_url(selected_path)
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.image(public_url, caption=f"Selected Scan: {selected_filename}", width=350)
+            with col2:
+                if st.button("🗑️ Delete Scan", type="secondary"):
+                    if delete_scan_from_supabase(selected_path):
+                        st.success("Scan deleted!")
+                        st.rerun()
+                
+                if st.button("⚡ Run Evaluation", type="primary"):
+                    st.session_state["active_scan_url"] = public_url
+                    st.success("Loaded into assessment pipeline!")
+    else:
+        st.info("No pending scans found for this student. Upload a sheet above to begin.")
     # -----------------------------------------------------------------------------
     # 0. INPUT PREPARATION: TARGET WORDS & OCR TRANSCRIPTION
     # -----------------------------------------------------------------------------
