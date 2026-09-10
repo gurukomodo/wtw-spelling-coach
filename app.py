@@ -406,6 +406,7 @@ def show_teacher_dashboard():
 # =============================================================================
 def display_class_page():
     st.title("Class Overview")
+    supabase = get_supabase_client()
 
     if "class_diagnostic_history" not in st.session_state:
         from database_manager import get_diagnostic_assessments
