@@ -639,14 +639,15 @@ def display_class_page():
 
         if st.button("Identify Students", key="identify_students_btn", type="primary"):
             import base64
+            import fitz  # PyMuPDF
             from spelling_logic import transcribe_handwriting
+            from model_manager import run_model_chain
 
             students = get_all_students_by_teacher(
                 st.session_state.get("user_email", "")
             )
             student_names = [s["name"] for s in students]
 
-            identified = []
             progress = st.progress(0, text="Reading student names...")
 
             for i, p in enumerate(pages):
@@ -655,16 +656,12 @@ def display_class_page():
                     text=f"Reading page {p['page_num']} of {len(pages)}..."
                 )
                 try:
-                    # Convert PDF page bytes to base64 image for OCR
-                    import fitz  # PyMuPDF
                     doc = fitz.open(stream=p["pdf_bytes"], filetype="pdf")
-                    mat = fitz.Matrix(2, 2)  # 2x zoom for better OCR
+                    mat = fitz.Matrix(2, 2)
                     pix = doc[0].get_pixmap(matrix=mat)
                     img_bytes = pix.tobytes("png")
                     img_b64 = base64.b64encode(img_bytes).decode()
 
-                    # Ask the vision model to read the student name
-                    from model_manager import run_model_chain
                     name_prompt = f"""This is a student spelling test page.
 Look at the top of the page where it says 'Name: ___'.
 Read the student's handwritten name.
@@ -685,7 +682,6 @@ If you cannot read the name clearly, return 'Unknown'."""
                     raw_name = run_model_chain("vision", messages, temperature=0.1)
                     raw_name = raw_name.strip() if raw_name else "Unknown"
 
-                    # Fuzzy match against known student names
                     matched_name = "Unknown"
                     matched_id = None
                     if raw_name and raw_name != "Unknown":
@@ -696,85 +692,81 @@ If you cannot read the name clearly, return 'Unknown'."""
                                 matched_id = s["student_id"]
                                 break
 
-                    identified.append({
-                        "page_num": p["page_num"],
-                        "pdf_bytes": p["pdf_bytes"],
-                        "raw_name": raw_name,
-                        "matched_name": matched_name,
-                        "matched_id": matched_id,
-                    })
+                    # --- STEP 2: PERSIST TO SUPABASE IMMEDIATELY ---
+                    # Convert PDF bytes to base64 so it can be stored easily as text in DB
+                    pdf_b64 = base64.b64encode(p["pdf_bytes"]).decode('utf-8')
+                    
+                    supabase.table("assessments").insert({
+                        "class_id": st.session_state.get("current_class_id"),
+                        "student_id": matched_id,
+                        "raw_ocr_name": raw_name,
+                        "status": "pending",
+                        "pdf_base64": pdf_b64
+                    }).execute()
 
                 except Exception as e:
-                    identified.append({
-                        "page_num": p["page_num"],
-                        "pdf_bytes": p["pdf_bytes"],
-                        "raw_name": "Error",
-                        "matched_name": "Unknown",
-                        "matched_id": None,
-                    })
                     print(f"OCR error on page {p['page_num']}: {e}")
 
             progress.empty()
-            st.session_state["identified_pages"] = identified
             st.session_state["scanned_pages"] = None
             st.rerun()
 
-    if st.session_state.get("identified_pages"):
-        identified = st.session_state["identified_pages"]
-        st.subheader("Confirm Student Matches")
-        st.write(
-            "The app has read each student's name from their test page. "
-            "Please confirm or correct each match before saving."
-        )
+    # --- STEP 3: READ PENDING SCANS FROM SUPABASE (PERSISTENT ACROSS LOGOUTS) ---
+    current_class_id = st.session_state.get("current_class_id")
+    pending_db_records = supabase.table("assessments") \
+        .select("*") \
+        .eq("class_id", current_class_id) \
+        .eq("status", "pending") \
+        .execute().data
 
-        students = get_all_students_by_teacher(
-            st.session_state.get("user_email", "")
-        )
+    if pending_db_records:
+        st.subheader("⚠️ Pending Class Assessment Scans")
+        st.write("Review detected student names. Unconfirmed scans are saved safely and survive page reloads.")
+
+        students = get_all_students_by_teacher(st.session_state.get("user_email", ""))
         student_options = ["-- Unknown --"] + [s["name"] for s in students]
 
-        confirmed = []
-        for p in identified:
-            col1, col2, col3 = st.columns([1, 2, 2])
+        confirmed_updates = []
+        for p in pending_db_records:
+            col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
             with col1:
-                st.caption(f"Page {p['page_num']}")
+                st.caption(f"Scan ID: {p['id'][:6]}...")
             with col2:
-                st.caption(f"OCR read: **{p['raw_name']}**")
+                st.caption(f"OCR read: **{p.get('raw_ocr_name', 'Unknown')}**")
             with col3:
-                default_idx = student_options.index(p["matched_name"]) \
-                    if p["matched_name"] in student_options else 0
+                # Find matching student name from student_id
+                current_match_name = next(
+                    (s["name"] for s in students if s["student_id"] == p.get("student_id")), 
+                    "-- Unknown --"
+                )
+                default_idx = student_options.index(current_match_name) if current_match_name in student_options else 0
+                
                 selected = st.selectbox(
-                    f"Match page {p['page_num']}",
+                    f"Match scan {p['id']}",
                     options=student_options,
                     index=default_idx,
-                    key=f"match_page_{p['page_num']}",
+                    key=f"match_page_{p['id']}",
                     label_visibility="collapsed"
                 )
-                matched_id = next(
-                    (s["student_id"] for s in students if s["name"] == selected),
-                    None
-                )
-                confirmed.append({
-                    **p,
-                    "confirmed_name": selected,
-                    "confirmed_id": matched_id,
-                })
+                
+                selected_id = next((s["student_id"] for s in students if s["name"] == selected), None)
+                confirmed_updates.append({"id": p["id"], "student_id": selected_id})
+                
+            with col4:
+                if st.button("Discard", key=f"discard_{p['id']}"):
+                    supabase.table("assessments").delete().eq("id", p["id"]).execute()
+                    st.rerun()
 
-        if st.button(
-            "Confirm & Save to Student Profiles",
-            key="confirm_scan_btn",
-            type="primary"
-        ):
-            st.session_state["confirmed_scan_pages"] = confirmed
-            st.session_state["identified_pages"] = None
-            st.success(
-                "Matches confirmed! Go to each student's page to run "
-                "the assessment analysis. Their scanned page is ready and waiting."
-            )
-            for c in confirmed:
-                if c["confirmed_id"]:
-                    st.session_state[
-                        f"scanned_pdf_{c['confirmed_id']}"
-                    ] = c["pdf_bytes"]
+        if st.button("Confirm & Save All to Student Profiles", key="confirm_scan_btn", type="primary"):
+            for update in confirmed_updates:
+                if update["student_id"]:
+                    supabase.table("assessments").update({
+                        "student_id": update["student_id"],
+                        "status": "confirmed"
+                    }).eq("id", update["id"]).execute()
+                    
+            st.success("All scans confirmed and published to student profiles!")
+            st.rerun()
 
     st.divider()
 
@@ -959,6 +951,33 @@ If you cannot read the name clearly, return 'Unknown'."""
                     st.error(f"Could not send feedback: {e}")
             else:
                 st.warning("Please enter some feedback before submitting.")
+
+def display_pending_class_scans(class_id):
+    pending_records = get_scans_from_db(class_id=class_id, status="pending")
+    
+    if not pending_records:
+        return  # Keep UI clean if no pending scans exist
+
+    st.subheader("⚠️ Pending Class Assessment Scans")
+    st.info("Review and assign detected student scores before saving to profiles.")
+
+    # Render pending scans in an editable table or list
+    for record in pending_records:
+        col1, col2, col3 = st.columns([2, 3, 1])
+        with col1:
+            st.write(f"Detected: **{record['student_name']}**")
+        with col2:
+            st.write(f"Scores: {record['extracted_scores']}")
+        with col3:
+            if st.button("Discard", key=f"del_{record['id']}"):
+                delete_scan_from_db(record['id'])
+                st.rerun()
+
+    # Confirm all pending scans for this class in one click
+    if st.button("Confirm All & Save to Student Profiles", type="primary"):
+        update_class_scans_status(class_id=class_id, from_status="pending", to_status="confirmed")
+        st.success("All scans published to individual student profiles!")
+        st.rerun()
 
 # =============================================================================
 # REFACTORED WORKFLOW ROUTER: EVALUATOR -> LOGIC -> DISPLAY -> OVERRIDE UI
@@ -1673,21 +1692,16 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
         if not raw_attempts:
             st.warning("Please upload and transcribe student handwriting before running analytics.")
         else:
-            # Preserve number-aware dict structure for proper alignment
-            if not raw_attempts:
-                st.warning("Please upload and transcribe student handwriting before running analytics.")
+            # Sort by word number first if we have dicts
+            if isinstance(raw_attempts, list) and raw_attempts and isinstance(raw_attempts[0], dict):
+                def safe_num(item):
+                    try:
+                        return int(item.get("number", 0))
+                    except (ValueError, TypeError):
+                        return 0
+                raw_attempts_sorted = sorted(raw_attempts, key=safe_num)
             else:
-            # Sort by word number first if we have dicts (preserves correct pairing
-            # even when student wrote across instead of down the page).
-                if isinstance(raw_attempts, list) and raw_attempts and isinstance(raw_attempts[0], dict):
-                    def safe_num(item):
-                        try:
-                            return int(item.get("number", 0))
-                        except (ValueError, TypeError):
-                            return 0
-                    raw_attempts_sorted = sorted(raw_attempts, key=safe_num)
-                else:
-                    raw_attempts_sorted = raw_attempts
+                raw_attempts_sorted = raw_attempts
 
                 # Build flat lists for feature_evaluator, in correct order
                 if isinstance(raw_attempts_sorted, list) and raw_attempts_sorted and isinstance(raw_attempts_sorted[0], dict):
