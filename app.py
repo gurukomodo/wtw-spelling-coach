@@ -254,6 +254,20 @@ def main():
 # =============================================================================
 # PAGE: REGISTRATION & LOGIN
 # =============================================================================
+from datetime import datetime
+
+def calculate_grad_year(current_grade: int, hemisphere: str = "Northern", final_grade: int = 12) -> int:
+    now = datetime.now()
+    current_year = now.year
+    
+    remaining_years = final_grade - current_grade
+    
+    if hemisphere.title() == "Northern":
+        # Fall semester (Aug-Dec) belongs to the cycle graduating in (current_year + remaining + 1)
+        start_year = current_year if now.month >= 8 else current_year - 1
+        return start_year + remaining_years + 1
+    else:
+        return current_year + remaining_years
 def show_registration_page():
     st.image("logo.svg", width=200)
     st.title("Welcome to UnBoxEd Spelling Coach")
@@ -407,6 +421,39 @@ def show_teacher_dashboard():
 def display_class_page():
     st.title("Class Overview")
     supabase = get_supabase_client()
+    current_class_id = st.session_state.get("current_class_id")
+
+    if not current_class_id:
+        st.warning("Please select a class to view assessments.")
+        return
+
+    # Fetch pending scans for this class
+    pending_res = supabase.table("assessments") \
+        .select("*") \
+        .eq("class_id", current_class_id) \
+        .eq("status", "pending") \
+        .execute()
+    
+    pending_scans = pending_res.data or []
+
+    # UI Display for Pending Scans
+    st.subheader("📋 Pending & Unprocessed Scans")
+    if pending_scans:
+        st.info(f"Found {len(pending_scans)} scan(s) awaiting processing.")
+        for scan in pending_scans:
+            with st.expander(f"Scan ID #{scan['id']} — Student: {scan.get('student_id', 'Unassigned')}"):
+                st.write(f"**Uploaded At:** {scan.get('created_at')}")
+                st.write(f"**Status:** `{scan.get('status')}`")
+                if scan.get("file_url"):
+                    st.markdown(f"[View Uploaded Document]({scan['file_url']})")
+                
+                if st.button("Process Assessment", key=f"process_{scan['id']}"):
+                    st.session_state["active_assessment_id"] = scan["id"]
+                    st.rerun()
+    else:
+        st.caption("No pending scans found for this class.")
+        
+    st.divider()
 
     if "class_diagnostic_history" not in st.session_state:
         from database_manager import get_diagnostic_assessments
@@ -697,13 +744,15 @@ If you cannot read the name clearly, return 'Unknown'."""
                     # Convert PDF bytes to base64 so it can be stored easily as text in DB
                     pdf_b64 = base64.b64encode(p["pdf_bytes"]).decode('utf-8')
                     
-                    supabase.table("assessments").insert({
-                        "class_id": st.session_state.get("current_class_id"),
-                        "student_id": matched_id,
-                        "raw_ocr_name": raw_name,
-                        "status": "pending",
-                        "pdf_base64": pdf_b64
-                    }).execute()
+                    assessment_payload = {
+                        "student_id": selected_student_id,  # Must be string e.g., 'student_b65a694d'
+                        "class_id": current_class_id,        # Include class ID
+                        "evaluation_json": json.dumps(evaluation_data), # Save full evaluation JSON here
+                        "status": "uploaded",                # Match query status expected by UI
+                        "file_url": storage_file_url
+                    }
+
+                    supabase.table("assessments").insert(assessment_payload).execute()
 
                 except Exception as e:
                     print(f"OCR error on page {p['page_num']}: {e}")
