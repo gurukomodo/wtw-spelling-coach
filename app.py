@@ -9,9 +9,9 @@ import time
 import uuid
 import base64
 import database_manager as db
-import datetime
 import feature_evaluator
 import spelling_logic
+from datetime import datetime
 from constants import DIAGNOSTIC_GROUPS, DEFAULT_TEST_WORDS, PSI_WORD_BANK
 from utils import preprocess_image, clean_ai_formatting
 from supabase import create_client, Client
@@ -51,7 +51,7 @@ init_correction_tables()
 # =============================================================================
 # PAGE CONFIG
 # =============================================================================
-st.set_page_config(page_title="UnBoxEd Spelling Coach", layout="wide", page_icon="logo.svg")
+st.set_page_config(page_title="UnBoxEd Spelling Coach", layout="wide", page_icon="logo1.svg")
 
 # =============================================================================
 # PERSISTENCE HELPERS
@@ -254,7 +254,6 @@ def main():
 # =============================================================================
 # PAGE: REGISTRATION & LOGIN
 # =============================================================================
-from datetime import datetime
 
 def calculate_grad_year(current_grade: int, hemisphere: str = "Northern", final_grade: int = 12) -> int:
     now = datetime.now()
@@ -269,7 +268,7 @@ def calculate_grad_year(current_grade: int, hemisphere: str = "Northern", final_
     else:
         return current_year + remaining_years
 def show_registration_page():
-    st.image("logo.svg", width=200)
+    st.image("logo1.svg", width=200)
     st.title("Welcome to UnBoxEd Spelling Coach")
     col1, col2 = st.columns(2)
 
@@ -300,7 +299,7 @@ def show_registration_page():
                     st.error("Please provide both name and email.")
 
 def show_login_page():
-    st.image("logo.svg", width=200)
+    st.image("logo1.svg", width=200)
     st.title("Teacher Login")
     existing_teachers = get_all_teachers()
 
@@ -345,7 +344,7 @@ def show_login_page():
 # PAGE: TEACHER DASHBOARD & ROUTER
 # =============================================================================
 def show_teacher_dashboard():
-    st.sidebar.image("logo.svg", width=200)
+    st.sidebar.image("logo1.svg", width=200)
     st.sidebar.success(f"👤 Logged in: {st.session_state.get('user_name', st.session_state.get('user_email', 'Teacher'))}")
 
     if st.sidebar.button("Log Out", key="logout_button"):
@@ -946,7 +945,7 @@ If you cannot read the name clearly, return 'Unknown'."""
                 st.download_button(
                     label="Download Batch Practice PDF",
                     data=pdf_bytes,
-                    file_name=f"Class_Practice_Lists_{datetime.datetime.now().strftime('%Y-%m-%d')}.pdf",
+                    file_name=f"Class_Practice_Lists_{datetime.now().strftime('%Y-%m-%d')}.pdf",
                     mime="application/pdf",
                     key="download_batch_practice_pdf",
                     type="primary"
@@ -1126,7 +1125,7 @@ def display_student_detail_view(student_id, current_teacher_email):
         )
 
         # List Title input
-        default_title = f"{practice_data['group_title'].upper()} Practice - {datetime.datetime.now().strftime('%Y-%m-%d')}"
+        default_title = f"{practice_data['group_title'].upper()} Practice - {datetime.now().strftime('%Y-%m-%d')}"
         list_title = st.text_input(
             "List Title:",
             value=default_title,
@@ -1354,7 +1353,7 @@ def display_student_detail_view(student_id, current_teacher_email):
                             try:
                                 initial_date = datetime.datetime.strptime(str(initial_date), "%Y-%m-%d").date()
                             except Exception:
-                                initial_date = datetime.datetime.now().date()
+                                initial_date = datetime.now().date()
 
                         edit_date = st.date_input("Assessment Date", value=initial_date, key=f"edit_date_{assessment['id']}")
                         edit_name = st.text_input("Assessment Name", value=test_name, key=f"edit_name_{assessment['id']}")
@@ -1585,7 +1584,7 @@ def display_assessment_pipeline(student_id, student_name, current_teacher_email)
 
         assessment_date = st.date_input(
             "Assessment Date",
-            value=datetime.datetime.now().date(),
+            value=datetime.now().date(),
             key=f"assessment_date_{student_id}"
         )
 
